@@ -9,8 +9,13 @@ an HTML audio control through the `piper_tts_button` template helper.
 pip install mkdocs-piper-tts
 ```
 
-Piper 1.2 uses ONNX Runtime GPU. For TensorRT synthesis support, install the
-extra on a compatible CUDA 12 system:
+For CUDA synthesis, install the CUDA extra on a compatible CUDA 12 system:
+
+```bash
+pip install 'mkdocs-piper-tts[cuda]'
+```
+
+For TensorRT synthesis support, install:
 
 ```bash
 pip install 'mkdocs-piper-tts[tensorrt]'

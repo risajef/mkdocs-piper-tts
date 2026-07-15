@@ -24,8 +24,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cuda = [
+  "onnxruntime-gpu[cuda,cudnn]==1.25.0",
+]
 tensorrt = [
   "onnx>=1.16,<2",
+  "onnxruntime-gpu[cuda,cudnn]==1.25.0",
   "tensorrt-cu12>=10.9,<11",
 ]
 
@@ -39,3 +43,11 @@ Issues = "https://github.com/risajef/mkdocs-piper-tts/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv]
+dependency-metadata = [
+  { name = "piper-tts", version = "1.2.0", requires-dist = [
+    "piper-phonemize~=1.1.0",
+    "onnxruntime-gpu[cuda,cudnn]==1.25.0",
+  ] },
+]

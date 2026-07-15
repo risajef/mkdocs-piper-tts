@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mkdocs-piper-tts"
+version = "0.1.0"
+description = "MkDocs plugin for generating and serving Piper text-to-speech page audio"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Reto Weber" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: MkDocs",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "markupsafe>=2.1",
+  "mkdocs>=1.6,<2",
+  "piper-tts==1.2.0",
+]
+
+[project.optional-dependencies]
+tensorrt = [
+  "onnx>=1.16,<2",
+  "tensorrt-cu12>=10.9,<11",
+]
+
+[project.entry-points."mkdocs.plugins"]
+piper-tts = "mkdocs_piper_tts.plugin:PiperTTSPlugin"
+
+[project.urls]
+Homepage = "https://github.com/risajef/mkdocs-piper-tts"
+Repository = "https://github.com/risajef/mkdocs-piper-tts"
+Issues = "https://github.com/risajef/mkdocs-piper-tts/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]

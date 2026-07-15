@@ -66,6 +66,6 @@ Render the control in an MkDocs template with:
 ## Releases
 
 Tags named `v*` build and publish a wheel and source distribution with PyPI
-trusted publishing. Before the first release, configure PyPI's pending trusted
-publisher for the `risajef/mkdocs-piper-tts` repository and the
-`publish-pypi.yml` workflow.
+trusted publishing. For each release, update the version in `pyproject.toml`,
+commit it, and push a matching tag such as `v0.2.0`. PyPI versions are
+immutable, so never reuse a published version or tag.

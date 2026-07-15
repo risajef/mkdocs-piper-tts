@@ -9,6 +9,7 @@ description = "MkDocs plugin for generating and serving Piper text-to-speech pag
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Reto Weber" }]
+license = "MIT"
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Framework :: MkDocs",

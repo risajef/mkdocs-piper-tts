@@ -24,6 +24,13 @@ pip install 'mkdocs-piper-tts[tensorrt]'
 The plugin invokes `ffmpeg` to encode MP3 files, so `ffmpeg` must be available
 on `PATH` when generating audio.
 
+## Piper Version Policy
+
+This package intentionally pins `piper-tts==1.2.0`. That release is MIT
+licensed and is compatible with this package's MIT license. Do not upgrade
+Piper without first reviewing the license of the target release and its
+runtime dependencies.
+
 ## Configure
 
 Store Piper `.onnx` models and their JSON configuration files outside the

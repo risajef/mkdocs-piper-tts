@@ -6,11 +6,11 @@ lang: en
 
 This page is synthesized during `mkdocs build`.
 
-[View the latest release E2E result](e2e-status.md)
+[View the latest release E2E result.](e2e-status.md)
 
-[View the mkdocs-piper-tts source on GitHub](https://github.com/risajef/mkdocs-piper-tts)
+[View the mkdocs-piper-tts source on GitHub.](https://github.com/risajef/mkdocs-piper-tts)
 
-[View the mkdocs-piper-tts package on PyPI](https://pypi.org/project/mkdocs-piper-tts/)
+[View the mkdocs-piper-tts package on PyPI.](https://pypi.org/project/mkdocs-piper-tts/)
 
 For a more extensive production example, visit
 [retoweber.info](https://retoweber.info/).

@@ -1,0 +1,2 @@
+global-exclude *.onnx
+global-exclude *.onnx.json

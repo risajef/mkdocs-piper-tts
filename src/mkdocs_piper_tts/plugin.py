@@ -24,8 +24,16 @@ from mkdocs.plugins import BasePlugin, get_plugin_logger
 log = get_plugin_logger(__name__)
 
 DEFAULT_LANGUAGES = {
-    "de": {"model": "de_DE-thorsten-medium.onnx", "label": "Vorlesen"},
-    "en": {"model": "en_US-lessac-medium.onnx", "label": "Listen"},
+    "de": {
+        "model": "de_DE-thorsten-medium.onnx",
+        "label": "Vorlesen",
+        "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx",
+    },
+    "en": {
+        "model": "en_US-lessac-medium.onnx",
+        "label": "Listen",
+        "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
+    },
 }
 
 
@@ -751,8 +759,22 @@ class PiperTTSPlugin(BasePlugin):
         model_path = model_value if model_value.is_absolute() else self._model_dir / model_value
         config_value = Path(str(voice["config"]))
         config_path = config_value if config_value.is_absolute() else self._model_dir / config_value
-        if not model_path.is_file() or not config_path.is_file():
-            raise PluginError(f"Piper TTS model for language {language!r} is missing: " f"{model_path} and {config_path}")
+        missing_paths = [path for path in (model_path, config_path) if not path.is_file()]
+        if missing_paths:
+            locations = "\n".join(f"  - {path}" for path in (model_path, config_path))
+            download_url = str(voice.get("download_url") or "").strip()
+            download_hint = ""
+            if download_url:
+                download_hint = (
+                    "\nDownload the matching files from:\n"
+                    f"  - {download_url}\n"
+                    f"  - {download_url}.json"
+                )
+            raise PluginError(
+                f"Piper TTS: there is no ONNX voice model and/or JSON configuration for "
+                f"language {language!r}.\nModel directory: {self._model_dir}\n"
+                f"Required files:\n{locations}{download_hint}"
+            )
         return model_path.resolve(), config_path.resolve()
 
     def _resolve_speaker_id(self, voice, config_path, language):

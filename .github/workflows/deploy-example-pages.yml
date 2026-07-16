@@ -22,29 +22,20 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Restore verified Piper example voice artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/example_voice_asset.py restore
+
       - name: Install audio encoder
         run: sudo apt-get update && sudo apt-get install --yes ffmpeg
 
       - name: Install package and test dependencies
         run: python -m pip install --upgrade pip && python -m pip install '.[test]'
 
-      - name: Run fresh CPU end-to-end test
-        env:
-          PIPER_TTS_TEST_MODEL_DIR: ${{ runner.temp }}/piper-test-model
+      - name: Test and deploy the checked-in CPU example site with MkDocs
         run: |
-          rm -rf "$PIPER_TTS_TEST_MODEL_DIR" "$HOME/.cache/mkdocs-piper-tts"
           python -m pytest tests/test_example_e2e.py -q -m 'not cuda'
-
-      - name: Deploy fresh CPU example site with MkDocs
-        env:
-          MODEL_DIR: ${{ runner.temp }}/piper-test-model
-        run: |
-          mkdir -p "$MODEL_DIR"
-          curl --fail --location --output "$MODEL_DIR/en_US-lessac-medium.onnx" \
-            https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
-          curl --fail --location --output "$MODEL_DIR/en_US-lessac-medium.onnx.json" \
-            https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
-          cp "$MODEL_DIR"/* examples/simple-site/models/
           cat > examples/simple-site/docs/e2e-status.md <<EOF
           ---
           title: E2E Build Status

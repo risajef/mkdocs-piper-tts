@@ -4,7 +4,6 @@ import os
 import shutil
 import subprocess
 import sys
-import urllib.request
 from pathlib import Path
 
 import pytest
@@ -13,14 +12,13 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_DIR = REPOSITORY_ROOT / "examples" / "simple-site"
 VOICE_NAME = "en_US-lessac-medium.onnx"
-VOICE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/"
 
 
 def _model_dir() -> Path:
     configured_path = os.environ.get("PIPER_TTS_TEST_MODEL_DIR")
     if configured_path:
         return Path(configured_path).resolve()
-    return Path.home() / ".cache" / "mkdocs-piper-tts" / "test-voices" / "en_US-lessac-medium"
+    return EXAMPLE_DIR / "models"
 
 
 @pytest.fixture(scope="session")
@@ -28,15 +26,12 @@ def test_model_dir() -> Path:
     model_dir = _model_dir()
     model_path = model_dir / VOICE_NAME
     config_path = model_path.with_suffix(".onnx.json")
-    if model_path.is_file() and config_path.is_file():
-        return model_dir
-
-    model_dir.mkdir(parents=True, exist_ok=True)
-    for filename in (VOICE_NAME, f"{VOICE_NAME}.json"):
-        try:
-            urllib.request.urlretrieve(VOICE_URL + filename, model_dir / filename)
-        except OSError as error:
-            pytest.skip(f"could not download the Piper test voice: {error}")
+    if not model_path.is_file() or not config_path.is_file():
+        pytest.fail(
+            "The checked-in Piper test voice is missing. Expected "
+            f"{model_path} and {config_path}. Restore the repository artifact; "
+            "tests never download voices."
+        )
     return model_dir
 
 

@@ -38,6 +38,10 @@ def test_model_dir() -> Path:
 def _build_example(tmp_path: Path, model_dir: Path, *, use_cuda: bool) -> subprocess.CompletedProcess[str]:
     project_dir = tmp_path / ("cuda" if use_cuda else "cpu")
     shutil.copytree(EXAMPLE_DIR, project_dir)
+    # The repository artifact contains pre-generated audio for publishing the
+    # example site. Remove it only from this disposable copy so this test
+    # exercises Piper inference and FFmpeg instead of the cache-only path.
+    shutil.rmtree(project_dir / "docs" / "assets" / "piper-tts" / "audio", ignore_errors=True)
     model_path = next(model_dir.glob("*.onnx"), None)
     if model_path is None or not model_path.with_suffix(".onnx.json").is_file():
         pytest.skip(f"no Piper model and matching .onnx.json found in {model_dir}")

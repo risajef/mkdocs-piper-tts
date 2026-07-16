@@ -433,6 +433,7 @@ class PiperTTSPlugin(BasePlugin):
         ("languages", config_options.Type(dict, default={})),
         ("button_class", config_options.Type(str, default="piper-tts-button")),
         ("ffmpeg_path", config_options.Type(str, default="ffmpeg")),
+        ("generate_audio", config_options.Type(bool, default=True)),
         ("use_cuda", config_options.Type(bool, default=False)),
         ("use_tensorrt", config_options.Type(bool, default=False)),
         ("batch_size", config_options.Type(int, default=1)),
@@ -603,6 +604,12 @@ class PiperTTSPlugin(BasePlugin):
             self._text_elapsed,
             self._cache_check_elapsed,
         )
+        if self._pending_audio and not self.config["generate_audio"]:
+            pending_pages = ", ".join(sorted(task[5] for task in self._pending_audio.values()))
+            raise PluginError(
+                "Piper TTS cache-only build found missing or stale audio for: "
+                f"{pending_pages}. Generate audio locally and publish an updated runtime asset bundle."
+            )
         if self._pending_audio:
             self._generate_pending_audio()
         else:

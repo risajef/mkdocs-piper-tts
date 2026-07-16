@@ -57,6 +57,10 @@ Set `lang` in a page's front matter. The plugin caches generated MP3 files and
 sidecar metadata under `<docs_dir>/<asset_dir>/<audio_dir>`. Cached files are
 reused when both page source and plugin code are unchanged.
 
+Set `generate_audio: false` for cache-only builds. In this mode, missing or
+stale audio fails the build instead of initializing Piper; use it in CI after
+restoring a verified audio cache artifact.
+
 Render the control in an MkDocs template with:
 
 ```jinja2

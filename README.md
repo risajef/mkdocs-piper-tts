@@ -79,6 +79,39 @@ mkdocs build --strict
 The example uses CPU synthesis by default. Set `use_cuda: true` in its
 `mkdocs.yml` after installing the CUDA extra on a system with a compatible GPU.
 
+## Deploying An Example
+
+The example is deployed from the repository's `gh-pages` branch with MkDocs'
+standard `gh-deploy` command. Its `site_url` and `remote_branch` are already
+configured in `examples/simple-site/mkdocs.yml`.
+
+### Standard GitHub Actions Deployment
+
+Push a release tag or use the **Deploy Example Pages** workflow manually to let
+GitHub Actions download the test voice, synthesize the example on CPU, and run
+`mkdocs gh-deploy`. Choose this when the example is small and consuming GitHub
+Actions minutes for CPU synthesis is acceptable. The workflow publishes a
+fresh E2E status page with the release tag and build timestamp.
+
+### Local Precomputation And Deployment
+
+Prefer local synthesis when a compatible CUDA GPU is available, when the site
+has substantial audio, or when GitHub Actions minutes are limited. Generate
+the audio on the machine that has the model and accelerator, then deploy the
+cached static output with MkDocs:
+
+```bash
+cd examples/simple-site
+# Place the model and matching .onnx.json file in models/ first.
+# Set use_cuda: true in mkdocs.yml when using the CUDA extra.
+mkdocs build --strict
+mkdocs gh-deploy --strict --force
+```
+
+`mkdocs gh-deploy` rebuilds the site but reuses valid cached audio, then pushes
+the resulting static artifact, including MP3 files, to `gh-pages`. Never commit
+voice models or generated audio to the source branch.
+
 The repository's end-to-end tests build the example once with CPU and once with
 CUDA. They download a cached test voice unless `PIPER_TTS_TEST_MODEL_DIR` names
 a directory containing a model and matching configuration:
@@ -94,11 +127,12 @@ The CUDA test skips when ONNX Runtime cannot create a CUDA execution provider.
 
 ## Published Example
 
-Every release rebuilds the CPU example from an empty generated-output directory,
-runs its CPU end-to-end test, and deploys the result to
+Every release runs the CPU end-to-end test and uses `mkdocs gh-deploy` to deploy
+the result to
 [mkdocs-piper-tts.retoweber.info](https://mkdocs-piper-tts.retoweber.info/). The deployed site
 includes an E2E Build Status page with the release tag and build timestamp. The
-workflow deliberately does not cache models, generated audio, or site output.
+workflow deliberately does not cache models, generated audio, or site output
+between runs.
 
 ## Releases
 

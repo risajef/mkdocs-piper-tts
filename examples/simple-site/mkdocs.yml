@@ -1,5 +1,6 @@
 site_name: Piper TTS Example
 site_url: https://mkdocs-piper-tts.retoweber.info/
+remote_branch: gh-pages
 theme:
   name: mkdocs
   custom_dir: overrides

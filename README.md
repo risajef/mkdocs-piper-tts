@@ -62,6 +62,9 @@ Render the control in an MkDocs template with:
 {{ piper_tts_button(page) }}
 ```
 
+For a more extensive production example, see [retoweber.info](https://retoweber.info/),
+which uses this plugin for its English and German pages.
+
 ## Example And Tests
 
 [`examples/simple-site`](examples/simple-site) is a complete, minimal MkDocs
@@ -93,7 +96,7 @@ The CUDA test skips when ONNX Runtime cannot create a CUDA execution provider.
 
 Every release rebuilds the CPU example from an empty generated-output directory,
 runs its CPU end-to-end test, and deploys the result to
-[GitHub Pages](https://retoweber.info/mkdocs-piper-tts/). The deployed site
+[mkdocs-piper-tts.retoweber.info](https://mkdocs-piper-tts.retoweber.info/). The deployed site
 includes an E2E Build Status page with the release tag and build timestamp. The
 workflow deliberately does not cache models, generated audio, or site output.
 

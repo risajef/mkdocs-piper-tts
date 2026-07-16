@@ -80,7 +80,6 @@ def _load_voice(
     """Load Piper with either the CUDA or CPU execution provider."""
     started = time.perf_counter()
     import onnxruntime  # pylint: disable=import-outside-toplevel
-    from piper import PiperVoice  # pylint: disable=import-outside-toplevel
     from piper.config import PiperConfig  # pylint: disable=import-outside-toplevel
 
     _log_timing(
@@ -186,8 +185,7 @@ def _audio_from_batch(
             squared = audio * audio
             cumulative = np.cumsum(squared, dtype=np.float64)
             window_energy = cumulative[window - 1 :].copy()
-            if window > 1:
-                window_energy[1:] -= cumulative[:-window]
+            window_energy[1:] -= cumulative[:-window]
             energy = np.sqrt(window_energy / window)
         active = np.flatnonzero(energy > 0.005)
         end = min(len(audio), (int(active[-1]) + window) if len(active) else 0)

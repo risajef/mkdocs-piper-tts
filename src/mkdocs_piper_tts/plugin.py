@@ -324,7 +324,9 @@ class _PageTextExtractor(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in {"script", "style", "noscript"}:
             self.ignored_depth += 1
-        elif not self.ignored_depth and tag in {"br", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "pre"}:
+        elif not self.ignored_depth and tag == "br":
+            self.parts.append(", ")
+        elif not self.ignored_depth and tag in {"div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "pre"}:
             self.parts.append("\n")
 
     def handle_endtag(self, tag):
@@ -778,7 +780,16 @@ class PiperTTSPlugin(BasePlugin):
         parser = _PageTextExtractor()
         parser.feed(html_content)
         parser.close()
-        return " ".join("".join(parser.parts).split())
+        text = "".join(parser.parts)
+
+        def paragraph_pause(match):
+            preceding_text = match.group(1).rstrip()
+            if preceding_text.endswith((".", "!", "?")):
+                return preceding_text + " "
+            return preceding_text + ". "
+
+        text = re.sub(r"(\S)\s*\n[ \t]*\n+", paragraph_pause, text)
+        return " ".join(text.split())
 
     def _cache_paths(self, source_rel_path, source_hash):
         source_path = Path(source_rel_path)

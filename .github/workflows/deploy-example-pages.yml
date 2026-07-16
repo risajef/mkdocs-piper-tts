@@ -39,6 +39,11 @@ jobs:
         env:
           MODEL_DIR: ${{ runner.temp }}/piper-test-model
         run: |
+          mkdir -p "$MODEL_DIR"
+          curl --fail --location --output "$MODEL_DIR/en_US-lessac-medium.onnx" \
+            https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+          curl --fail --location --output "$MODEL_DIR/en_US-lessac-medium.onnx.json" \
+            https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
           cp "$MODEL_DIR"/* examples/simple-site/models/
           cat > examples/simple-site/docs/e2e-status.md <<EOF
           ---

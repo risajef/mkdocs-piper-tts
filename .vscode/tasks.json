@@ -49,8 +49,7 @@
     {
       "id": "packageVersion",
       "type": "promptString",
-      "description": "Package version/tag without v (for example 0.2.3)",
-      "validateInput": "^(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)$"
+      "description": "Package version/tag without v (for example 0.2.3)"
     }
   ]
 }

@@ -1,5 +1,6 @@
 import pytest
 from mkdocs.exceptions import PluginError
+from pathlib import Path
 
 from mkdocs_piper_tts.plugin import PiperTTSPlugin
 
@@ -10,7 +11,7 @@ def test_extract_text_adds_pauses_for_paragraphs_and_line_breaks() -> None:
     assert PiperTTSPlugin._extract_text(None, html) == "First paragraph. Second line, continues here. Done."
 
 
-def test_missing_voice_error_lists_expected_paths_and_download_urls(tmp_path) -> None:
+def test_missing_voice_error_lists_expected_paths_and_download_urls(tmp_path: Path) -> None:
     plugin = PiperTTSPlugin()
     plugin._model_dir = tmp_path / "models"
 

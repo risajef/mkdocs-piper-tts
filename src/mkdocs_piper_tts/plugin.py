@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 import wave
+import numpy as np
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -19,6 +20,8 @@ from markupsafe import Markup
 from mkdocs.config import config_options
 from mkdocs.exceptions import PluginError
 from mkdocs.plugins import BasePlugin, get_plugin_logger
+from mkdocs.structure.pages import Page
+from piper import PiperVoice
 
 
 log = get_plugin_logger(__name__)
@@ -27,32 +30,33 @@ DEFAULT_LANGUAGES = {
     "de": {
         "model": "de_DE-thorsten-medium.onnx",
         "label": "Vorlesen",
-        "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx",
+        "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+        "de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx",
     },
     "en": {
         "model": "en_US-lessac-medium.onnx",
         "label": "Listen",
-        "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
+        "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+        "en/en_US/lessac/medium/en_US-lessac-medium.onnx",
     },
 }
 
 
-def _log_timing(label, started, *, plugin_started=None, level="info"):
+def _log_timing(label: str, started: float, *, plugin_started: float | None = None, level: str = "info"):
     """Log wall-clock and monotonic timing so build phases can be correlated."""
     elapsed = time.perf_counter() - started
     since_plugin = ""
     if plugin_started is not None:
         since_plugin = f", since_plugin={time.perf_counter() - plugin_started:.3f}s"
-    message = "Piper TTS timing: %s at=%s duration=%.3fs%s" % (
-        label,
-        datetime.now().isoformat(timespec="milliseconds"),
-        elapsed,
-        since_plugin,
+    message = (
+        f"Piper TTS timing: {label} "
+        f"at={datetime.now().isoformat(timespec='milliseconds')} "
+        f"duration={elapsed:.3f}s{since_plugin}"
     )
     getattr(log, level)(message)
 
 
-def _log_duration(label, duration, *, plugin_started=None):
+def _log_duration(label: str, duration: float, *, plugin_started: float | None = None):
     """Log an already accumulated duration with the same timing format."""
     since_plugin = ""
     if plugin_started is not None:
@@ -67,17 +71,17 @@ def _log_duration(label, duration, *, plugin_started=None):
 
 
 def _load_voice(
-    model_path,
-    config_path,
+    model_path: Path,
+    config_path: Path,
     *,
-    use_cuda,
-    plugin_started=None,
+    use_cuda: bool,
+    plugin_started: float | None = None,
 ):
     """Load Piper with either the CUDA or CPU execution provider."""
     started = time.perf_counter()
-    import onnxruntime
-    from piper import PiperVoice
-    from piper.config import PiperConfig
+    import onnxruntime  # pylint: disable=import-outside-toplevel
+    from piper import PiperVoice  # pylint: disable=import-outside-toplevel
+    from piper.config import PiperConfig  # pylint: disable=import-outside-toplevel
 
     _log_timing(
         "voice import",
@@ -131,9 +135,13 @@ def _load_voice(
     return voice
 
 
-def _audio_from_batch(voice, phoneme_ids, speaker_id, timing=None):
+def _audio_from_batch(
+    voice: PiperVoice,
+    phoneme_ids: list[list[int]],
+    speaker_id: int | None,
+    timing: dict[str, float] | None = None,
+):
     """Run one padded batch and return one trimmed float waveform per item."""
-    import numpy as np
 
     max_length = max(len(ids) for ids in phoneme_ids)
     input_ids = np.zeros((len(phoneme_ids), max_length), dtype=np.int64)
@@ -197,16 +205,15 @@ def _audio_from_batch(voice, phoneme_ids, speaker_id, timing=None):
 
 
 def _generate_audio_batch(
-    tasks,
-    voice,
-    batch_size,
-    ffmpeg_path,
-    progress_callback=None,
-    plugin_started=None,
-    inference_progress_callback=None,
+    tasks: list[tuple[int, int, int, str, int | None, dict]],
+    voice: PiperVoice,
+    batch_size: int,
+    ffmpeg_path: Path,
+    progress_callback: callable | None = None,
+    plugin_started: float | None = None,
+    inference_progress_callback: callable | None = None,
 ):
     """Generate and encode a group of pages sharing one Piper model/voice."""
-    import numpy as np
 
     started = time.perf_counter()
     with tempfile.TemporaryDirectory() as temporary_dir:
@@ -323,13 +330,14 @@ def _generate_audio_batch(
 
 
 class _PageTextExtractor(HTMLParser):
+    """Extract text from HTML while ignoring script/style/noscript content."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.parts = []
         self.ignored_depth = 0
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str]]) -> None:
         if tag in {"script", "style", "noscript"}:
             self.ignored_depth += 1
         elif not self.ignored_depth and tag == "br":
@@ -337,7 +345,7 @@ class _PageTextExtractor(HTMLParser):
         elif not self.ignored_depth and tag in {"div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "pre"}:
             self.parts.append("\n")
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style", "noscript"} and self.ignored_depth:
             self.ignored_depth -= 1
         elif not self.ignored_depth and tag in {"h1", "h2", "h3", "h4", "h5", "h6", "li"}:
@@ -345,25 +353,27 @@ class _PageTextExtractor(HTMLParser):
         elif not self.ignored_depth and tag in {"div", "li", "p", "pre"}:
             self.parts.append("\n")
 
-    def handle_data(self, data):
+    def handle_data(self, data: str) -> None:
         if not self.ignored_depth:
             self.parts.append(data)
 
 
 class PiperTTSPlugin(BasePlugin):
+    """MkDocs plugin that generates TTS audio for Markdown pages using Piper."""
+
     config_scheme = (
         ("asset_dir", config_options.Type(str, default="assets/piper-tts")),
         ("audio_dir", config_options.Type(str, default="audio")),
         ("model_dir", config_options.Type(str, default="models/piper-tts")),
         ("languages", config_options.Type(dict, default={})),
         ("button_class", config_options.Type(str, default="piper-tts-button")),
-        ("ffmpeg_path", config_options.Type(str, default="ffmpeg")),
+        ("ffmpeg_path", config_options.Type(Path, default=Path("ffmpeg"))),
         ("generate_audio", config_options.Type(bool, default=True)),
         ("use_cuda", config_options.Type(bool, default=False)),
         ("batch_size", config_options.Type(int, default=1)),
     )
 
-    def on_config(self, config):
+    def on_config(self, config: dict) -> None:
         self._timing_started = time.perf_counter()
         generate_audio = os.environ.get("PIPER_TTS_GENERATE_AUDIO")
         if generate_audio is None:
@@ -423,14 +433,14 @@ class PiperTTSPlugin(BasePlugin):
         )
         return config
 
-    def on_env(self, env, config, files):
+    def on_env(self, env, config, files) -> None:
         env.globals["piper_tts_button"] = self.render_button
         return env
 
-    def on_page_content(self, html_content, *, page, config, files):
+    def on_page_content(self, html_content: str, *, page, config, files) -> str:
         page_started = time.perf_counter()
         metadata = getattr(page, "meta", {}) or {}
-        language = str(metadata.get("lang") or "").lower().split("-")[0]
+        language = str(metadata.get("lang") or "").lower().split("-", maxsplit=1)[0]
         voice = self._languages.get(language)
         if voice is None or not getattr(page, "file", None):
             return html_content
@@ -510,7 +520,7 @@ class PiperTTSPlugin(BasePlugin):
             )
         return html_content
 
-    def on_post_build(self, config):
+    def on_post_build(self, config: dict) -> None:
         post_build_started = time.perf_counter()
         log.info(
             "Piper TTS cache summary: eligible_pages=%d cache_hits=%d " "cache_misses=%d pending=%d scan_time=%.3fs",
@@ -604,7 +614,7 @@ class PiperTTSPlugin(BasePlugin):
         completed = 0
         started = time.monotonic()
 
-        def report_progress(audio_path):
+        def report_progress(audio_path: Path) -> None:
             nonlocal completed
             source_path = next(task[5] for task in group if str(audio_path) == task[0])
             completed += 1
@@ -625,7 +635,7 @@ class PiperTTSPlugin(BasePlugin):
             try:
                 inference_reported = -1
 
-                def report_inference(done, total_batches, segments_done, elapsed):
+                def report_inference(done: int, total_batches: int, segments_done: int, elapsed: float) -> None:
                     nonlocal inference_reported
                     if not total_batches:
                         return
@@ -692,14 +702,14 @@ class PiperTTSPlugin(BasePlugin):
             plugin_started=self._timing_started,
         )
 
-    def _batch_size(self):
+    def _batch_size(self) -> int:
         batch_size = self.config["batch_size"]
         if batch_size < 1:
             raise PluginError("Piper TTS batch_size must be one or greater")
         return batch_size
 
     @staticmethod
-    def _format_duration(seconds):
+    def _format_duration(seconds: float) -> str:
         seconds = max(0, int(seconds))
         minutes, seconds = divmod(seconds, 60)
         hours, minutes = divmod(minutes, 60)
@@ -709,7 +719,7 @@ class PiperTTSPlugin(BasePlugin):
             return f"{minutes}m{seconds:02d}s"
         return f"{seconds}s"
 
-    def render_button(self, page=None, label=None):
+    def render_button(self, page: Page | None = None, label: str | None = None) -> Markup:
         if page is None:
             return Markup("")
 
@@ -718,7 +728,7 @@ class PiperTTSPlugin(BasePlugin):
             return Markup("")
 
         metadata = getattr(page, "meta", {}) or {}
-        language = str(metadata.get("lang") or "").lower().split("-")[0]
+        language = str(metadata.get("lang") or "").lower().split("-", maxsplit=1)[0]
         voice = self._languages.get(language, {})
         audio_label = label or voice.get("label") or language
         audio_rel_path = posixpath.join(self._asset_dir, self._audio_dir, audio_path.name)
@@ -740,10 +750,10 @@ class PiperTTSPlugin(BasePlugin):
             f"{html.escape(str(audio_label))}</audio>"
         )
 
-    def _configured_languages(self):
+    def _configured_languages(self) -> dict[str, dict]:
         languages = {language: dict(voice) for language, voice in DEFAULT_LANGUAGES.items()}
         for language, configured_voice in (self.config["languages"] or {}).items():
-            normalized_language = str(language).lower().split("-")[0]
+            normalized_language = str(language).lower().split("-", maxsplit=1)[0]
             voice = dict(configured_voice or {})
             if "model" not in voice:
                 raise PluginError(f"Piper TTS language {language!r} must define a model")
@@ -754,7 +764,7 @@ class PiperTTSPlugin(BasePlugin):
             voice.setdefault("config", f"{model.name}.json")
         return languages
 
-    def _voice_files(self, voice, language):
+    def _voice_files(self, voice: dict, language: str) -> tuple[Path, Path]:
         model_value = Path(str(voice["model"]))
         model_path = model_value if model_value.is_absolute() else self._model_dir / model_value
         config_value = Path(str(voice["config"]))
@@ -765,11 +775,7 @@ class PiperTTSPlugin(BasePlugin):
             download_url = str(voice.get("download_url") or "").strip()
             download_hint = ""
             if download_url:
-                download_hint = (
-                    "\nDownload the matching files from:\n"
-                    f"  - {download_url}\n"
-                    f"  - {download_url}.json"
-                )
+                download_hint = "\nDownload the matching files from:\n" f"  - {download_url}\n" f"  - {download_url}.json"
             raise PluginError(
                 f"Piper TTS: there is no ONNX voice model and/or JSON configuration for "
                 f"language {language!r}.\nModel directory: {self._model_dir}\n"
@@ -777,7 +783,7 @@ class PiperTTSPlugin(BasePlugin):
             )
         return model_path.resolve(), config_path.resolve()
 
-    def _resolve_speaker_id(self, voice, config_path, language):
+    def _resolve_speaker_id(self, voice: dict, config_path: Path, language: str) -> int | None:
         speaker = voice.get("speaker")
         if speaker is None:
             return None
@@ -798,7 +804,7 @@ class PiperTTSPlugin(BasePlugin):
             raise PluginError(f"Unknown Piper speaker {speaker!r} for language {language!r}")
         return speaker_id
 
-    def _extract_text(self, html_content):
+    def _extract_text(self, html_content: str) -> str:
         parser = _PageTextExtractor()
         parser.feed(html_content)
         parser.close()
@@ -813,7 +819,7 @@ class PiperTTSPlugin(BasePlugin):
         text = re.sub(r"(\S)\s*\n[ \t]*\n+", paragraph_pause, text)
         return " ".join(text.split())
 
-    def _cache_paths(self, source_rel_path, source_hash):
+    def _cache_paths(self, source_rel_path: str, source_hash: str) -> tuple[Path, Path]:
         source_path = Path(source_rel_path)
         source_id = hashlib.sha256(source_rel_path.encode("utf-8")).hexdigest()[:12]
         slug = re.sub(r"[^A-Za-z0-9_-]+", "-", source_path.with_suffix("").as_posix())
@@ -826,7 +832,7 @@ class PiperTTSPlugin(BasePlugin):
     def _metadata_key(metadata):
         return json.dumps(metadata, sort_keys=True, separators=(",", ":"))
 
-    def _cache_status(self, audio_path, metadata_path, expected):
+    def _cache_status(self, audio_path: Path, metadata_path: Path, expected: dict) -> tuple[bool, str]:
         if not audio_path.is_file() or audio_path.stat().st_size == 0:
             return False, "audio missing or empty"
         try:
@@ -840,14 +846,14 @@ class PiperTTSPlugin(BasePlugin):
         changed = sorted(key for key in set(actual) | set(expected) if actual.get(key) != expected.get(key))
         return False, f"metadata mismatch ({', '.join(changed)})"
 
-    def _remove_stale_audio(self, site_audio_dir):
+    def _remove_stale_audio(self, site_audio_dir: Path) -> None:
         current_paths = set(self._audio_by_page.values())
         for published_path in site_audio_dir.glob("*.mp3"):
             if published_path.name in {path.name for path in current_paths}:
                 continue
             published_path.unlink(missing_ok=True)
 
-    def _hash_file(self, path):
+    def _hash_file(self, path: Path) -> str:
         cache_key = str(path)
         if cache_key in self._file_hashes:
             return self._file_hashes[cache_key]
@@ -859,7 +865,7 @@ class PiperTTSPlugin(BasePlugin):
         self._file_hashes[cache_key] = value
         return value
 
-    def _relative_url(self, page, target_path):
+    def _relative_url(self, page: Page, target_path: str) -> str:
         page_url = "/" + str(getattr(page, "url", "") or "").lstrip("/")
         if page_url == "/" or page_url.endswith("/"):
             page_directory = page_url

@@ -1,0 +1,40 @@
+{
+    "black-formatter.path": [
+        "pyink" // The google formatter (pyink) does not have a VS Code extension. https://github.com/google/pyink?tab=readme-ov-file#is-there-a-vs-code-extension-for-pyink
+    ],
+    "pylint.enabled": true,
+    "pylint.args": [
+        "--rcfile=${workspaceFolder}/pylintrc"
+    ],
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.diagnosticMode": "workspace",
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportAttributeAccessIssue": "none",
+        "reportCallIssue": "none",
+        "reportOptionalCall": "none",
+        "reportOptionalMemberAccess": "none",
+        "reportOptionalSubscript": "none",
+        "reportOperatorIssue": "none"
+    },
+    "mypy.enabled": true,
+    "mypy.args": [
+        "--config-file=${workspaceFolder}/pyproject.toml"
+    ],
+    "mypy.dmypyExecutable": "${workspaceFolder}/.venv/Scripts/dmypy.exe", // Windows
+    // "mypy.dmypyExecutable": "${workspaceFolder}/.venv/bin/dmypy", // Linux
+    "mypy-type-checker.args": [
+        "--config-file=${workspaceFolder}/pyproject.toml"
+    ],
+    "mypy-type-checker.importStrategy": "fromEnvironment",
+    "[python]": {
+        "editor.formatOnSaveMode": "file",
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnType": false,
+    },
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true
+}

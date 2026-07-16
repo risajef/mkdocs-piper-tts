@@ -39,9 +39,7 @@ def main() -> None:
 
 
 def require_clean_worktree() -> None:
-    status = subprocess.run(
-        ["git", "status", "--short"], cwd=PROJECT_DIR, check=True, capture_output=True, text=True
-    ).stdout
+    status = subprocess.run(["git", "status", "--short"], cwd=PROJECT_DIR, check=True, capture_output=True, text=True).stdout
     if status:
         raise SystemExit("Commit or stash all mkdocs-piper-tts changes before creating a release:\n" + status)
 

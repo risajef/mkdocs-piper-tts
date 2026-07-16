@@ -124,13 +124,16 @@ def verify_checksum(archive_path: Path, checksum_path: Path) -> None:
 
 
 def release_exists(tag: str, repo: str | None) -> bool:
-    return subprocess.run(
-        gh_command("release", "view", tag, repo=repo),
-        cwd=PROJECT_DIR,
-        check=False,
-        capture_output=True,
-        text=True,
-    ).returncode == 0
+    return (
+        subprocess.run(
+            gh_command("release", "view", tag, repo=repo),
+            cwd=PROJECT_DIR,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode
+        == 0
+    )
 
 
 def run_gh(*args: str, repo: str | None) -> None:
@@ -158,6 +161,7 @@ def sha256(path: Path) -> str:
 
 
 class BytesReader:
+
     def __init__(self, data: bytes) -> None:
         self.data = data
         self.position = 0

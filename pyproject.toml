@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mkdocs-piper-tts"
-version = "0.1.1"
+version = "0.2.0"
 description = "MkDocs plugin for generating and serving Piper text-to-speech page audio"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,11 +28,7 @@ dependencies = [
 cuda = [
   "onnxruntime-gpu[cuda,cudnn]==1.25.0",
 ]
-tensorrt = [
-  "onnx>=1.16,<2",
-  "onnxruntime-gpu[cuda,cudnn]==1.25.0",
-  "tensorrt-cu12>=10.9,<11",
-]
+test = ["pytest>=8,<9"]
 
 [project.entry-points."mkdocs.plugins"]
 piper-tts = "mkdocs_piper_tts.plugin:PiperTTSPlugin"
@@ -44,6 +40,9 @@ Issues = "https://github.com/risajef/mkdocs-piper-tts/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = ["cuda: requires CUDAExecutionProvider and a compatible GPU"]
 
 [tool.uv]
 dependency-metadata = [

@@ -4,3 +4,8 @@ __pycache__/
 build/
 dist/
 .venv/
+examples/simple-site/models/*.onnx
+examples/simple-site/models/*.onnx.json
+examples/simple-site/site/
+examples/simple-site/docs/assets/piper-tts/audio/*.mp3
+examples/simple-site/docs/assets/piper-tts/audio/*.mp3.json

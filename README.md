@@ -15,12 +15,6 @@ For CUDA synthesis, install the CUDA extra on a compatible CUDA 12 system:
 pip install 'mkdocs-piper-tts[cuda]'
 ```
 
-For TensorRT synthesis support, install:
-
-```bash
-pip install 'mkdocs-piper-tts[tensorrt]'
-```
-
 The plugin invokes `ffmpeg` to encode MP3 files, so `ffmpeg` must be available
 on `PATH` when generating audio.
 
@@ -57,15 +51,51 @@ Set `lang` in a page's front matter. The plugin caches generated MP3 files and
 sidecar metadata under `<docs_dir>/<asset_dir>/<audio_dir>`. Cached files are
 reused when both page source and plugin code are unchanged.
 
-Set `generate_audio: false` for cache-only builds. In this mode, missing or
-stale audio fails the build instead of initializing Piper; use it in CI after
-restoring a verified audio cache artifact.
+Set `generate_audio: false`, or `PIPER_TTS_GENERATE_AUDIO=false`, for
+cache-only builds. In this mode, missing or stale audio fails the build instead
+of initializing Piper; use it in CI after restoring a verified audio cache
+artifact.
 
 Render the control in an MkDocs template with:
 
 ```jinja2
 {{ piper_tts_button(page) }}
 ```
+
+## Example And Tests
+
+[`examples/simple-site`](examples/simple-site) is a complete, minimal MkDocs
+project. It is in the source repository, not the published wheel. Put a Piper
+model and matching `.onnx.json` file in `examples/simple-site/models`, then run:
+
+```bash
+cd examples/simple-site
+mkdocs build --strict
+```
+
+The example uses CPU synthesis by default. Set `use_cuda: true` in its
+`mkdocs.yml` after installing the CUDA extra on a system with a compatible GPU.
+
+The repository's end-to-end tests build the example once with CPU and once with
+CUDA. They download a cached test voice unless `PIPER_TTS_TEST_MODEL_DIR` names
+a directory containing a model and matching configuration:
+
+```bash
+pip install -e '.[test]'
+pytest -m 'not cuda'
+PIPER_TTS_TEST_MODEL_DIR=/path/to/models pytest -m cuda
+```
+
+The CUDA test skips when ONNX Runtime cannot create a CUDA execution provider.
+`ffmpeg` must be available on `PATH` for either test.
+
+## Published Example
+
+Every release rebuilds the CPU example from an empty generated-output directory,
+runs its CPU end-to-end test, and deploys the result to
+[GitHub Pages](https://retoweber.info/mkdocs-piper-tts/). The deployed site
+includes an E2E Build Status page with the release tag and build timestamp. The
+workflow deliberately does not cache models, generated audio, or site output.
 
 ## Releases
 

@@ -58,41 +58,14 @@ def _log_duration(label, duration, *, plugin_started=None):
     )
 
 
-def _shape_inferred_model(model_path, cache_dir):
-    """Prepare the Piper graph for TensorRT's shape-analysis pass."""
-    import onnx
-
-    cache_dir = Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    inferred_path = cache_dir / f"{Path(model_path).stem}.shape-inferred.onnx"
-    if inferred_path.is_file() and inferred_path.stat().st_mtime_ns >= Path(model_path).stat().st_mtime_ns:
-        return inferred_path
-
-    log.info("Running ONNX shape inference for %s", model_path)
-    model = onnx.load(str(model_path))
-    inferred = onnx.shape_inference.infer_shapes(model, check_type=False)
-    temporary_path = inferred_path.with_suffix(".tmp.onnx")
-    onnx.save(inferred, str(temporary_path))
-    temporary_path.replace(inferred_path)
-    return inferred_path
-
-
 def _load_voice(
     model_path,
     config_path,
     *,
     use_cuda,
-    use_tensorrt,
-    cache_dir,
-    batch_size,
-    fp16,
     plugin_started=None,
 ):
-    """Load Piper with either CUDA EP or TensorRT EP.
-
-    PiperVoice.load hard-codes the CUDA/CPU provider list, so TensorRT needs a
-    session constructed here and passed to PiperVoice directly.
-    """
+    """Load Piper with either the CUDA or CPU execution provider."""
     started = time.perf_counter()
     import onnxruntime
     from piper import PiperVoice
@@ -113,23 +86,6 @@ def _load_voice(
         started,
         plugin_started=plugin_started,
     )
-    if use_tensorrt:
-        started = time.perf_counter()
-        try:
-            # The NVIDIA wheel keeps libnvinfer beside its Python bindings.
-            # Importing it first makes those native libraries visible to ORT's
-            # TensorRT provider loader.
-            import tensorrt  # noqa: F401
-        except ImportError as error:
-            raise RuntimeError(
-                "TensorRT Python/runtime libraries are not installed; " "run `uv sync` or install `tensorrt-cu12`"
-            ) from error
-        _log_timing(
-            "TensorRT import",
-            started,
-            plugin_started=plugin_started,
-        )
-
     started = time.perf_counter()
     config = PiperConfig.from_dict(json.loads(Path(config_path).read_text(encoding="utf-8")))
     session_options = onnxruntime.SessionOptions()
@@ -138,57 +94,17 @@ def _load_voice(
         started,
         plugin_started=plugin_started,
     )
-    session_model_path = model_path
-    if use_tensorrt:
-        if "TensorrtExecutionProvider" not in onnxruntime.get_available_providers():
-            raise RuntimeError("This onnxruntime installation has no TensorRTExecutionProvider")
-        cache_dir = Path(cache_dir)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        precision = "fp16" if fp16 else "fp32"
-        started = time.perf_counter()
-        session_model_path = _shape_inferred_model(model_path, cache_dir)
-        _log_timing(
-            "ONNX shape inference/cache lookup",
-            started,
-            plugin_started=plugin_started,
-        )
-        profile = {
-            "trt_engine_cache_enable": True,
-            "trt_engine_cache_path": str(cache_dir),
-            "trt_engine_cache_prefix": (f"{Path(model_path).stem}-range-cuda-v3-{precision}-b{batch_size}"),
-            "trt_timing_cache_enable": True,
-            "trt_timing_cache_path": str(cache_dir),
-            "trt_fp16_enable": fp16,
-            # Piper uses dynamic shape construction with float scale inputs.
-            # Keep Range on CUDA/CPU instead of making TensorRT parse it as an
-            # integer shape tensor; the surrounding compatible subgraphs can
-            # still be delegated to TensorRT.
-            "trt_op_types_to_exclude": "Range",
-        }
-        providers = [
-            ("TensorrtExecutionProvider", profile),
-            "CUDAExecutionProvider",
-            "CPUExecutionProvider",
-        ]
-    elif use_cuda:
+    if use_cuda:
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     else:
         providers = ["CPUExecutionProvider"]
 
     started = time.perf_counter()
-    try:
-        session = onnxruntime.InferenceSession(
-            str(session_model_path),
-            sess_options=session_options,
-            providers=providers,
-        )
-    except Exception as error:
-        if use_tensorrt and "libnvinfer" in str(error):
-            raise RuntimeError(
-                "TensorRT libraries are missing; install a TensorRT 10.x "
-                "runtime compatible with this ONNX Runtime/CUDA installation"
-            ) from error
-        raise
+    session = onnxruntime.InferenceSession(
+        str(model_path),
+        sess_options=session_options,
+        providers=providers,
+    )
     _log_timing(
         "ONNX Runtime session creation",
         started,
@@ -197,9 +113,8 @@ def _load_voice(
 
     started = time.perf_counter()
     voice = PiperVoice(session=session, config=config)
-    expected_provider = "TensorrtExecutionProvider" if use_tensorrt else "CUDAExecutionProvider"
-    if (use_cuda or use_tensorrt) and expected_provider not in voice.session.get_providers():
-        raise RuntimeError(f"Piper TTS could not initialize {expected_provider}; " f"providers={voice.session.get_providers()}")
+    if use_cuda and "CUDAExecutionProvider" not in voice.session.get_providers():
+        raise RuntimeError(f"Piper TTS could not initialize CUDAExecutionProvider; providers={voice.session.get_providers()}")
     _log_timing(
         "Piper voice initialization",
         started,
@@ -435,20 +350,20 @@ class PiperTTSPlugin(BasePlugin):
         ("ffmpeg_path", config_options.Type(str, default="ffmpeg")),
         ("generate_audio", config_options.Type(bool, default=True)),
         ("use_cuda", config_options.Type(bool, default=False)),
-        ("use_tensorrt", config_options.Type(bool, default=False)),
         ("batch_size", config_options.Type(int, default=1)),
-        (
-            "tensorrt_cache_dir",
-            config_options.Type(str, default="models/piper-tts/tensorrt-cache"),
-        ),
-        # Piper's decoder contains FP16 TensorRT tactics that can fail during
-        # engine building (notably around dec.conv_post). FP32 is the safer
-        # default; projects can still opt into FP16 explicitly.
-        ("tensorrt_fp16", config_options.Type(bool, default=False)),
     )
 
     def on_config(self, config):
         self._timing_started = time.perf_counter()
+        generate_audio = os.environ.get("PIPER_TTS_GENERATE_AUDIO")
+        if generate_audio is None:
+            self._generate_audio = self.config["generate_audio"]
+        elif generate_audio.lower() in {"1", "true", "yes", "on"}:
+            self._generate_audio = True
+        elif generate_audio.lower() in {"0", "false", "no", "off"}:
+            self._generate_audio = False
+        else:
+            raise PluginError("PIPER_TTS_GENERATE_AUDIO must be a boolean value")
         self._page_scan_elapsed = 0.0
         self._eligible_pages = 0
         self._cache_hits = 0
@@ -466,9 +381,6 @@ class PiperTTSPlugin(BasePlugin):
         self._model_dir = Path(self.config["model_dir"])
         if not self._model_dir.is_absolute():
             self._model_dir = self._project_dir / self._model_dir
-        self._tensorrt_cache_dir = Path(self.config["tensorrt_cache_dir"])
-        if not self._tensorrt_cache_dir.is_absolute():
-            self._tensorrt_cache_dir = self._project_dir / self._tensorrt_cache_dir
         self._languages = self._configured_languages()
         self._audio_cache_dir = self._docs_dir / self._asset_dir / self._audio_dir
         self._audio_by_page = {}
@@ -604,7 +516,7 @@ class PiperTTSPlugin(BasePlugin):
             self._text_elapsed,
             self._cache_check_elapsed,
         )
-        if self._pending_audio and not self.config["generate_audio"]:
+        if self._pending_audio and not self._generate_audio:
             pending_pages = ", ".join(sorted(task[5] for task in self._pending_audio.values()))
             raise PluginError(
                 "Piper TTS cache-only build found missing or stale audio for: "
@@ -644,18 +556,13 @@ class PiperTTSPlugin(BasePlugin):
 
         generation_started = time.perf_counter()
         batch_size = self._batch_size()
-        use_tensorrt = self.config["use_tensorrt"]
         use_cuda = self.config["use_cuda"]
-        if use_tensorrt and not use_cuda:
-            raise PluginError("Piper TTS use_tensorrt requires use_cuda")
         total = len(self._pending_audio)
-        precision = "FP16" if self.config["tensorrt_fp16"] else "FP32"
         log.info(
-            "Generating %d Piper TTS MP3 files with batch size %d%s%s",
+            "Generating %d Piper TTS MP3 files with batch size %d%s",
             total,
             batch_size,
-            " using TensorRT" if use_tensorrt else "",
-            f" ({precision})" if use_tensorrt else "",
+            " using CUDA" if use_cuda else "",
         )
         grouped = {}
         for audio_path, (
@@ -732,22 +639,10 @@ class PiperTTSPlugin(BasePlugin):
                         self._format_duration(eta),
                     )
 
-                if use_tensorrt:
-                    log.info(
-                        "Loading/building TensorRT engine for %s " "(batch=%d; precision=%s; cache=%s)",
-                        model_path,
-                        batch_size,
-                        precision,
-                        self._tensorrt_cache_dir,
-                    )
                 voice = _load_voice(
                     model_path,
                     config_path,
                     use_cuda=use_cuda,
-                    use_tensorrt=use_tensorrt,
-                    cache_dir=self._tensorrt_cache_dir,
-                    batch_size=batch_size,
-                    fp16=self.config["tensorrt_fp16"],
                     plugin_started=self._timing_started,
                 )
                 log.info(
@@ -907,7 +802,7 @@ class PiperTTSPlugin(BasePlugin):
             return False, "metadata missing or invalid"
         if not isinstance(actual, dict):
             return False, "metadata is not an object"
-        if actual.get("source_hash") == expected["source_hash"]:
+        if all(actual.get(key) == value for key, value in expected.items()):
             return True, "valid"
         changed = sorted(key for key in set(actual) | set(expected) if actual.get(key) != expected.get(key))
         return False, f"metadata mismatch ({', '.join(changed)})"

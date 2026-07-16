@@ -1,0 +1,17 @@
+site_name: Piper TTS Example
+theme:
+  name: mkdocs
+  custom_dir: overrides
+
+plugins:
+  - search
+  - piper-tts:
+      model_dir: models
+      asset_dir: assets/piper-tts
+      audio_dir: audio
+      use_cuda: false
+      batch_size: 1
+      languages:
+        en:
+          model: en_US-lessac-medium.onnx
+          label: Listen

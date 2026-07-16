@@ -1,0 +1,73 @@
+name: Deploy Example Pages
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: example-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package and test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install '.[test]'
+
+      - name: Run fresh CPU end-to-end test
+        env:
+          PIPER_TTS_TEST_MODEL_DIR: ${{ runner.temp }}/piper-test-model
+        run: |
+          rm -rf "$PIPER_TTS_TEST_MODEL_DIR" "$HOME/.cache/mkdocs-piper-tts"
+          python -m pytest tests/test_example_e2e.py -q -m 'not cuda'
+
+      - name: Build fresh CPU example site
+        env:
+          MODEL_DIR: ${{ runner.temp }}/piper-test-model
+          EXAMPLE_DIR: ${{ runner.temp }}/simple-site
+          PUBLIC_DIR: ${{ runner.temp }}/public
+        run: |
+          rm -rf "$EXAMPLE_DIR" "$PUBLIC_DIR"
+          cp -R examples/simple-site "$EXAMPLE_DIR"
+          cp "$MODEL_DIR"/* "$EXAMPLE_DIR/models/"
+          cat > "$EXAMPLE_DIR/docs/e2e-status.md" <<EOF
+          ---
+          title: E2E Build Status
+          ---
+
+          # E2E Build Status
+
+          CPU end-to-end test: passed
+
+          Package: ${GITHUB_REF_NAME}
+
+          Built: $(date --utc +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+          cd "$EXAMPLE_DIR"
+          python -m mkdocs build --strict
+          mv site "$PUBLIC_DIR"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/public
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

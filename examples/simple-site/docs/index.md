@@ -4,9 +4,13 @@ lang: en
 
 # Piper TTS Example
 
+## Build and E2E Status
+
 This page is synthesized during `mkdocs build`.
 
 [View the latest release E2E result.](e2e-status.md)
+
+## Project Links
 
 [View the mkdocs-piper-tts source on GitHub.](https://github.com/risajef/mkdocs-piper-tts)
 

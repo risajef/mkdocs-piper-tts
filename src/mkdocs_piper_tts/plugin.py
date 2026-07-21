@@ -15,6 +15,7 @@ import numpy as np
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import quote
 
 from markupsafe import Markup
 from mkdocs.config import config_options
@@ -203,7 +204,7 @@ def _audio_from_batch(
 
 
 def _generate_audio_batch(
-    tasks: list[tuple[int, int, int, str, int | None, dict]],
+    tasks: list[dict],
     voice: PiperVoice,
     batch_size: int,
     ffmpeg_path: Path,
@@ -214,13 +215,17 @@ def _generate_audio_batch(
     """Generate and encode a group of pages sharing one Piper model/voice."""
 
     started = time.perf_counter()
+    durations = {}
     with tempfile.TemporaryDirectory() as temporary_dir:
         temporary_dir = Path(temporary_dir)
         wav_paths = [temporary_dir / f"{index}.wav" for index in range(len(tasks))]
         wav_files = []
         segments = []
+        sample_counts = [0 for _ in tasks]
         phonemize_started = time.perf_counter()
-        for index, (_, _, _, text, speaker_id, _) in enumerate(tasks):
+        for index, task in enumerate(tasks):
+            text = task["text"]
+            speaker_id = task["speaker_id"]
             wav_file = wave.open(str(wav_paths[index]), "wb")
             wav_file.setnchannels(1)
             wav_file.setsampwidth(2)
@@ -253,6 +258,7 @@ def _generate_audio_batch(
                     timing=inference_timing,
                 )
                 for segment, waveform in zip(current, waveforms):
+                    sample_counts[segment[0]] += len(waveform)
                     wav_files[segment[0]].writeframes(np.clip(waveform * 32767, -32767, 32767).astype(np.int16).tobytes())
                 if inference_progress_callback is not None:
                     inference_progress_callback(
@@ -281,8 +287,8 @@ def _generate_audio_batch(
         )
 
         encoding_started = time.perf_counter()
-        for index, (audio_path, _, _, _, _, _) in enumerate(tasks):
-            audio_path = Path(audio_path)
+        for index, task in enumerate(tasks):
+            audio_path = task["audio_path"]
             audio_path.parent.mkdir(parents=True, exist_ok=True)
             mp3_path = temporary_dir / f"{index}.mp3"
             result = subprocess.run(
@@ -311,8 +317,9 @@ def _generate_audio_batch(
             # (e.g. /tmp versus the project volume), so Path.replace() can
             # fail with EXDEV. shutil.move() falls back to copy-and-unlink.
             shutil.move(str(mp3_path), str(audio_path))
+            durations[str(audio_path)] = sample_counts[index] / voice.config.sample_rate
             if progress_callback is not None:
-                progress_callback(audio_path)
+                progress_callback(audio_path, task["source_path"])
         _log_timing(
             f"FFmpeg encoding and MP3 copies ({len(tasks)} files)",
             encoding_started,
@@ -324,7 +331,7 @@ def _generate_audio_batch(
         started,
         plugin_started=plugin_started,
     )
-    return time.perf_counter() - started
+    return time.perf_counter() - started, durations
 
 
 class _PageTextExtractor(HTMLParser):
@@ -354,6 +361,89 @@ class _PageTextExtractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not self.ignored_depth:
             self.parts.append(data)
+
+
+class _PageSectionExtractor(HTMLParser):
+    """Capture heading structure and surrounding text from rendered HTML."""
+
+    _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+    _BLOCK_TAGS = {"div", "p", "pre"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.events = []
+        self._text_parts = []
+        self._ignored_depth = 0
+        self._heading_tag = None
+        self._heading_parts = []
+
+    def _flush_text(self) -> None:
+        if not self._text_parts:
+            return
+        raw_text = "".join(self._text_parts)
+        if raw_text.strip():
+            self.events.append(
+                {
+                    "type": "text",
+                    "raw": raw_text,
+                }
+            )
+        self._text_parts.clear()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str]]) -> None:
+        if tag in {"script", "style", "noscript"}:
+            self._ignored_depth += 1
+            return
+        if self._ignored_depth:
+            return
+        if tag in self._HEADING_TAGS:
+            self._flush_text()
+            self._heading_tag = tag
+            self._heading_parts = []
+            return
+        if self._heading_tag:
+            return
+        if tag == "br":
+            self._text_parts.append(", ")
+        elif tag in self._BLOCK_TAGS or tag == "li":
+            self._text_parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript"} and self._ignored_depth:
+            self._ignored_depth -= 1
+            return
+        if self._ignored_depth:
+            return
+        if self._heading_tag == tag:
+            heading_text = " ".join("".join(self._heading_parts).split())
+            self.events.append(
+                {
+                    "type": "heading",
+                    "level": int(tag[1]),
+                    "title": heading_text,
+                }
+            )
+            self._heading_tag = None
+            self._heading_parts = []
+            return
+        if self._heading_tag:
+            return
+        if tag == "li":
+            self._text_parts.append(".\n")
+        elif tag in self._BLOCK_TAGS:
+            self._text_parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._ignored_depth:
+            return
+        if self._heading_tag:
+            self._heading_parts.append(data)
+            return
+        self._text_parts.append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._flush_text()
 
 
 class PiperTTSPlugin(BasePlugin):
@@ -402,12 +492,13 @@ class PiperTTSPlugin(BasePlugin):
         self._languages = self._configured_languages()
         self._audio_cache_dir = self._docs_dir / self._asset_dir / self._audio_dir
         self._audio_by_page = {}
+        self._playlist_by_page = {}
         self._pending_audio = {}
         self._file_hashes = {}
         self._plugin_hash = self._hash_file(Path(__file__))
         self._cache_index = {}
         cache_index_started = time.perf_counter()
-        for metadata_path in self._audio_cache_dir.glob("*.mp3.json"):
+        for metadata_path in self._audio_cache_dir.rglob("*.mp3.json"):
             try:
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
@@ -416,7 +507,7 @@ class PiperTTSPlugin(BasePlugin):
                 continue
             audio_path = metadata_path.with_suffix("")
             if audio_path.is_file() and audio_path.stat().st_size:
-                self._cache_index[self._metadata_key(metadata)] = (
+                self._cache_index[self._metadata_key(self._cache_lookup_metadata(metadata))] = (
                     audio_path,
                     metadata_path,
                 )
@@ -433,6 +524,8 @@ class PiperTTSPlugin(BasePlugin):
 
     def on_env(self, env, config, files) -> None:
         env.globals["piper_tts_button"] = self.render_button
+        env.globals["piper_tts_playlist"] = self.render_button
+        env.globals["piper_tts_reading_time"] = self.render_reading_time
         return env
 
     def on_page_content(self, html_content: str, *, page, config, files) -> str:
@@ -455,62 +548,107 @@ class PiperTTSPlugin(BasePlugin):
         speaker_id = self._resolve_speaker_id(voice, config_path, language)
         hash_started = time.perf_counter()
         source_hash = self._hash_file(source_path)
+        model_hash = self._hash_file(model_path)
+        config_hash = self._hash_file(config_path)
         self._hash_elapsed += time.perf_counter() - hash_started
-        text_started = time.perf_counter()
-        text = self._extract_text(html_content)
-        self._text_elapsed += time.perf_counter() - text_started
-        audio_path, metadata_path = self._cache_paths(page.file.src_path, source_hash)
-        expected_metadata = {
-            "plugin_hash": self._plugin_hash,
-            "source_hash": source_hash,
+        voice_metadata = {
+            "voice_language": language,
+            "voice_model": model_path.name,
+            "voice_config": config_path.name,
+            "voice_speaker_id": speaker_id,
+            "voice_model_hash": model_hash,
+            "voice_config_hash": config_hash,
+            "voice_runtime": "cuda" if self.config["use_cuda"] else "cpu",
         }
-
-        cache_started = time.perf_counter()
-        cache_valid, cache_reason = self._cache_status(
-            audio_path,
-            metadata_path,
-            expected_metadata,
+        text_started = time.perf_counter()
+        sections = self._extract_sections(
+            html_content,
+            fallback_title=str(getattr(page, "title", "") or "Page"),
         )
-        if not cache_valid and cache_reason == "audio missing or empty":
-            cached_paths = self._cache_index.get(self._metadata_key(expected_metadata))
-            if cached_paths is not None:
-                cached_audio_path, cached_metadata_path = cached_paths
-                cache_valid, cache_reason = self._cache_status(
-                    cached_audio_path,
-                    cached_metadata_path,
-                    expected_metadata,
-                )
-                if cache_valid:
-                    log.info(
-                        "Piper TTS cache reuse: %s -> %s",
-                        page.file.src_path,
-                        cached_audio_path.name,
-                    )
-                    audio_path = cached_audio_path
-                    metadata_path = cached_metadata_path
-        self._cache_check_elapsed += time.perf_counter() - cache_started
-        if not cache_valid:
-            self._cache_misses += 1
-            self._pending_audio[audio_path] = (
-                model_path,
-                config_path,
-                text,
-                speaker_id,
-                expected_metadata,
-                page.file.src_path,
-            )
-        else:
-            self._cache_hits += 1
-            log.debug("Reusing cached Piper TTS MP3 for %s", page.file.src_path)
+        self._text_elapsed += time.perf_counter() - text_started
+        section_filenames = self._section_filenames([section["title"] for section in sections])
+        playlist_entries = []
+        cache_logs = []
 
-        self._audio_by_page[page.file.src_path] = audio_path
+        for index, section in enumerate(sections):
+            section_text = section["text"]
+            section_title = section["title"]
+            section_hash = hashlib.sha256(section_text.encode("utf-8")).hexdigest()
+            audio_path, metadata_path = self._cache_paths(page.file.src_path, section_filenames[index])
+            expected_metadata = {
+                "plugin_hash": self._plugin_hash,
+                "source_hash": source_hash,
+                "section_hash": section_hash,
+                "section_index": index,
+                "section_count": len(sections),
+                "section_title": section_title,
+                **voice_metadata,
+            }
+
+            cache_started = time.perf_counter()
+            cache_valid, cache_reason = self._cache_status(
+                audio_path,
+                metadata_path,
+                expected_metadata,
+            )
+            if not cache_valid and cache_reason == "audio missing or empty":
+                cached_paths = self._cache_index.get(self._metadata_key(expected_metadata))
+                if cached_paths is not None:
+                    cached_audio_path, cached_metadata_path = cached_paths
+                    cache_valid, cache_reason = self._cache_status(
+                        cached_audio_path,
+                        cached_metadata_path,
+                        expected_metadata,
+                    )
+                    if cache_valid:
+                        log.info(
+                            "Piper TTS cache reuse: %s [%s] -> %s",
+                            page.file.src_path,
+                            section_title,
+                            cached_audio_path.name,
+                        )
+                        audio_path = cached_audio_path
+                        metadata_path = cached_metadata_path
+            self._cache_check_elapsed += time.perf_counter() - cache_started
+            if not cache_valid:
+                self._cache_misses += 1
+                self._pending_audio[audio_path] = {
+                    "model_path": model_path,
+                    "config_path": config_path,
+                    "text": section_text,
+                    "speaker_id": speaker_id,
+                    "expected_metadata": expected_metadata,
+                    "source_path": page.file.src_path,
+                    "section_title": section_title,
+                }
+                cache_logs.append((section_title, cache_reason))
+            else:
+                self._cache_hits += 1
+                log.debug("Reusing cached Piper TTS MP3 for %s [%s]", page.file.src_path, section_title)
+
+            section_metadata = self._load_json_metadata(metadata_path)
+            duration_seconds = self._estimate_duration_seconds(section_text)
+            if isinstance(section_metadata.get("duration_seconds"), (int, float)):
+                duration_seconds = float(section_metadata["duration_seconds"])
+            playlist_entries.append(
+                {
+                    "title": section_title,
+                    "audio_path": audio_path,
+                    "duration_seconds": duration_seconds,
+                }
+            )
+
+        self._playlist_by_page[page.file.src_path] = playlist_entries
+        self._audio_by_page[page.file.src_path] = playlist_entries[0]["audio_path"] if playlist_entries else None
         self._page_scan_elapsed += time.perf_counter() - page_started
-        if not cache_valid:
+        for section_title, cache_reason in cache_logs:
             log.info(
-                "Piper TTS cache miss: %s reason=%s",
+                "Piper TTS cache miss: %s [%s] reason=%s",
                 page.file.src_path,
+                section_title,
                 cache_reason,
             )
+        if cache_logs:
             _log_timing(
                 f"cache miss evaluation for {page.file.src_path}",
                 page_started,
@@ -535,7 +673,14 @@ class PiperTTSPlugin(BasePlugin):
             self._cache_check_elapsed,
         )
         if self._pending_audio and not self._generate_audio:
-            pending_pages = ", ".join(sorted(task[5] for task in self._pending_audio.values()))
+            pending_pages = ", ".join(
+                sorted(
+                    {
+                        self._normalize_pending_task(audio_path, task)["source_path"]
+                        for audio_path, task in self._pending_audio.items()
+                    }
+                )
+            )
             raise PluginError(
                 "Piper TTS cache-only build found missing or stale audio for: "
                 f"{pending_pages}. Generate audio locally and publish an updated runtime asset bundle."
@@ -556,11 +701,21 @@ class PiperTTSPlugin(BasePlugin):
         copy_started = time.perf_counter()
         site_audio_dir = Path(config.site_dir) / self._asset_dir / self._audio_dir
         site_audio_dir.mkdir(parents=True, exist_ok=True)
+        referenced_audio_paths = sorted(
+            {track["audio_path"] for playlist in self._playlist_by_page.values() for track in playlist},
+            key=lambda path: str(path),
+        )
         copied = 0
-        for audio_path in self._audio_cache_dir.glob("*.mp3"):
-            if audio_path.stat().st_size:
-                shutil.copy2(audio_path, site_audio_dir / audio_path.name)
-                copied += 1
+        for audio_path in referenced_audio_paths:
+            if not audio_path.is_file() or audio_path.stat().st_size == 0:
+                log.warning("Skipping missing or empty Piper TTS MP3 referenced by playlist: %s", audio_path)
+                continue
+            relative_path = audio_path.relative_to(self._audio_cache_dir)
+            destination = site_audio_dir / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(audio_path, destination)
+            copied += 1
+        self._remove_stale_audio(site_audio_dir)
         log.info("Copied %d Piper TTS MP3 files to %s", copied, site_audio_dir)
         _log_timing(
             f"copy audio to site ({copied} files)",
@@ -583,25 +738,20 @@ class PiperTTSPlugin(BasePlugin):
             " using CUDA" if use_cuda else "",
         )
         grouped = {}
-        for audio_path, (
-            model_path,
-            config_path,
-            text,
-            speaker_id,
-            metadata,
-            source_path,
-        ) in self._pending_audio.items():
-            key = (str(model_path), str(config_path), speaker_id)
+        for audio_path, task in self._pending_audio.items():
+            task = self._normalize_pending_task(audio_path, task)
+            key = (str(task["model_path"]), str(task["config_path"]), task["speaker_id"])
             grouped.setdefault(key, []).append(
-                (
-                    str(audio_path),
-                    model_path,
-                    config_path,
-                    text,
-                    speaker_id,
-                    source_path,
-                    metadata,
-                )
+                {
+                    "audio_path": audio_path,
+                    "model_path": task["model_path"],
+                    "config_path": task["config_path"],
+                    "text": task["text"],
+                    "speaker_id": task["speaker_id"],
+                    "source_path": task["source_path"],
+                    "expected_metadata": task["expected_metadata"],
+                    "section_title": task["section_title"],
+                }
             )
         _log_timing(
             f"group pending audio ({total} files, {len(grouped)} voices)",
@@ -612,9 +762,8 @@ class PiperTTSPlugin(BasePlugin):
         completed = 0
         started = time.monotonic()
 
-        def report_progress(audio_path: Path) -> None:
+        def report_progress(_audio_path: Path, source_path: str) -> None:
             nonlocal completed
-            source_path = next(task[5] for task in group if str(audio_path) == task[0])
             completed += 1
             elapsed = time.monotonic() - started
             rate = completed / elapsed if elapsed else 0.0
@@ -629,7 +778,8 @@ class PiperTTSPlugin(BasePlugin):
                 source_path,
             )
 
-        for (model_path, config_path, speaker_id), group in grouped.items():
+        for key, group in grouped.items():
+            model_path, config_path, _ = key
             try:
                 inference_reported = -1
 
@@ -658,8 +808,8 @@ class PiperTTSPlugin(BasePlugin):
                     )
 
                 voice = _load_voice(
-                    model_path,
-                    config_path,
+                    Path(model_path),
+                    Path(config_path),
                     use_cuda=use_cuda,
                     plugin_started=self._timing_started,
                 )
@@ -668,10 +818,16 @@ class PiperTTSPlugin(BasePlugin):
                     model_path,
                     ", ".join(voice.session.get_providers()),
                 )
-                # The batch worker only needs the first six fields; metadata is
-                # written by the parent after the MP3 has been created.
-                worker_tasks = [task[:6] for task in group]
-                worker_elapsed = _generate_audio_batch(
+                worker_tasks = [
+                    {
+                        "audio_path": task["audio_path"],
+                        "text": task["text"],
+                        "speaker_id": task["speaker_id"],
+                        "source_path": task["source_path"],
+                    }
+                    for task in group
+                ]
+                worker_elapsed, durations = _generate_audio_batch(
                     worker_tasks,
                     voice,
                     batch_size,
@@ -681,19 +837,25 @@ class PiperTTSPlugin(BasePlugin):
                     inference_progress_callback=report_inference,
                 )
             except Exception as error:
-                source_path = group[0][5]
+                source_path = group[0]["source_path"]
                 raise PluginError(f"Piper TTS synthesis failed for {source_path}: {error}") from error
 
-            for audio_path, _, _, _, _, source_path, metadata in group:
-                Path(audio_path).with_suffix(".mp3.json").write_text(
-                    json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            for task in group:
+                audio_path = task["audio_path"]
+                metadata_path = audio_path.with_suffix(".mp3.json")
+                expected_metadata = dict(task["expected_metadata"])
+                expected_metadata["duration_seconds"] = round(float(durations.get(str(audio_path), 0.0)), 3)
+                metadata_path.write_text(
+                    json.dumps(expected_metadata, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
+                self._cache_index[self._metadata_key(task["expected_metadata"])] = (audio_path, metadata_path)
             log.info(
                 "Finished Piper TTS batch for %s in %.1fs",
                 model_path,
                 worker_elapsed,
             )
+        self._pending_audio.clear()
         _log_timing(
             f"all pending audio generation ({total} files)",
             generation_started,
@@ -721,32 +883,119 @@ class PiperTTSPlugin(BasePlugin):
         if page is None:
             return Markup("")
 
-        audio_path = self._audio_by_page.get(getattr(page.file, "src_path", ""))
-        if audio_path is None:
+        source_path = getattr(page.file, "src_path", "")
+        playlist = self._playlist_by_page.get(source_path, [])
+        if not playlist:
             return Markup("")
 
         metadata = getattr(page, "meta", {}) or {}
         language = str(metadata.get("lang") or "").lower().split("-", maxsplit=1)[0]
         voice = self._languages.get(language, {})
         audio_label = label or voice.get("label") or language
-        audio_rel_path = posixpath.join(self._asset_dir, self._audio_dir, audio_path.name)
-        audio_url = self._relative_url(page, audio_rel_path)
+        playlist_urls = []
+        for track in playlist:
+            audio_rel_path = self._audio_rel_path(track["audio_path"])
+            playlist_urls.append(
+                {
+                    "title": track["title"],
+                    "url": self._relative_url(page, audio_rel_path),
+                }
+            )
+
+        if not playlist_urls:
+            return Markup("")
+
+        player_id = f"piper-tts-{hashlib.sha1(source_path.encode('utf-8')).hexdigest()[:12]}"
+        player_container_id = f"{player_id}-container"
         audio_class = self.config["button_class"].strip() or "piper-tts-button"
+        playlist_json = json.dumps(playlist_urls)
+        list_items = "".join(
+            "<li>" f'<button type="button" data-track-index="{index}">' f"{html.escape(str(track['title']))}</button>" "</li>"
+            for index, track in enumerate(playlist_urls)
+        )
         attributes = {
+            "id": player_id,
             "class": audio_class,
             "controls": "",
             "preload": "none",
             "aria-label": audio_label,
             "title": audio_label,
+            "src": playlist_urls[0]["url"],
+            "data-playlist": playlist_json,
         }
         rendered_attributes = " ".join(
             f'{name}="{html.escape(str(value), quote=True)}"' if value else name for name, value in attributes.items()
         )
         return Markup(
-            f"<audio {rendered_attributes}>"
-            f'<source src="{html.escape(audio_url, quote=True)}" type="audio/mpeg">'
-            f"{html.escape(str(audio_label))}</audio>"
+            f'<div id="{player_container_id}" class="{html.escape(audio_class, quote=True)}-wrapper">'
+            f"<audio {rendered_attributes}>{html.escape(str(audio_label))}</audio>"
+            f'<ol class="{html.escape(audio_class, quote=True)}-playlist">{list_items}</ol>'
+            "</div>"
+            "<script>"
+            "(function () {"
+            f"var audio = document.getElementById('{player_id}');"
+            f"var container = document.getElementById('{player_container_id}');"
+            "if (!audio || !container) { return; }"
+            "var playlist;"
+            "try { playlist = JSON.parse(audio.dataset.playlist || '[]'); } catch (_error) { return; }"
+            "if (!playlist.length) { return; }"
+            "var buttons = Array.prototype.slice.call(container.querySelectorAll('button[data-track-index]'));"
+            "var currentIndex = 0;"
+            "function markActive(index) {"
+            "  currentIndex = index;"
+            "  buttons.forEach(function (button, buttonIndex) {"
+            "    var active = buttonIndex === index;"
+            "    button.setAttribute('aria-current', active ? 'true' : 'false');"
+            "  });"
+            "}"
+            "function loadTrack(index, autoplay) {"
+            "  if (index < 0 || index >= playlist.length) { return; }"
+            "  markActive(index);"
+            "  if (audio.getAttribute('src') !== playlist[index].url) {"
+            "    audio.setAttribute('src', playlist[index].url);"
+            "    audio.load();"
+            "  }"
+            "  if (autoplay) {"
+            "    var playPromise = audio.play();"
+            "    if (playPromise && typeof playPromise.catch === 'function') {"
+            "      playPromise.catch(function () {});"
+            "    }"
+            "  }"
+            "}"
+            "buttons.forEach(function (button, index) {"
+            "  button.addEventListener('click', function () { loadTrack(index, true); });"
+            "});"
+            "audio.addEventListener('ended', function () {"
+            "  if (currentIndex + 1 < playlist.length) {"
+            "    loadTrack(currentIndex + 1, true);"
+            "  }"
+            "});"
+            "markActive(0);"
+            "})();"
+            "</script>"
         )
+
+    def render_reading_time(self, page: Page | None = None, label: str = "approximate reading time:") -> Markup:
+        if page is None:
+            return Markup("")
+
+        source_path = getattr(page.file, "src_path", "")
+        playlist = self._playlist_by_page.get(source_path, [])
+        if not playlist:
+            return Markup("")
+
+        total_duration = sum(max(0.0, float(track.get("duration_seconds") or 0.0)) for track in playlist)
+        if total_duration <= 0:
+            return Markup("")
+
+        rendered_label = html.escape(str(label).strip() or "approximate reading time:")
+        return Markup(
+            '<span class="piper-tts-reading-time">' f"{rendered_label} {self._format_duration(total_duration)}" "</span>"
+        )
+
+    def _audio_rel_path(self, audio_path: Path) -> str:
+        relative_path = audio_path.relative_to(self._audio_cache_dir).as_posix()
+        return posixpath.join(self._asset_dir, self._audio_dir, relative_path)
 
     def _configured_languages(self) -> dict[str, dict]:
         languages = {language: dict(voice) for language, voice in DEFAULT_LANGUAGES.items()}
@@ -802,12 +1051,15 @@ class PiperTTSPlugin(BasePlugin):
             raise PluginError(f"Unknown Piper speaker {speaker!r} for language {language!r}")
         return speaker_id
 
-    def _extract_text(self, html_content: str) -> str:
+    @staticmethod
+    def _extract_text(html_content: str) -> str:
         parser = _PageTextExtractor()
         parser.feed(html_content)
         parser.close()
-        text = "".join(parser.parts)
+        return PiperTTSPlugin._normalize_extracted_text("".join(parser.parts))
 
+    @staticmethod
+    def _normalize_extracted_text(text: str) -> str:
         def paragraph_pause(match):
             preceding_text = match.group(1).rstrip()
             if preceding_text.endswith((".", "!", "?")):
@@ -817,18 +1069,138 @@ class PiperTTSPlugin(BasePlugin):
         text = re.sub(r"(\S)\s*\n[ \t]*\n+", paragraph_pause, text)
         return " ".join(text.split())
 
-    def _cache_paths(self, source_rel_path: str, source_hash: str) -> tuple[Path, Path]:
-        source_path = Path(source_rel_path)
-        source_id = hashlib.sha256(source_rel_path.encode("utf-8")).hexdigest()[:12]
-        slug = re.sub(r"[^A-Za-z0-9_-]+", "-", source_path.with_suffix("").as_posix())
-        slug = slug.strip("-")[-80:] or "page"
-        filename = f"{slug}-{source_id}-{source_hash[:12]}.mp3"
-        audio_path = self._audio_cache_dir / filename
+    def _extract_sections(self, html_content: str, *, fallback_title: str) -> list[dict]:
+        parser = _PageSectionExtractor()
+        parser.feed(html_content)
+        parser.close()
+        events = parser.events
+        if not events:
+            return []
+
+        sections = []
+        h1_indices = [
+            index
+            for index, event in enumerate(events)
+            if event["type"] == "heading" and event.get("level") == 1 and event.get("title")
+        ]
+
+        if len(h1_indices) > 1:
+            for index, start in enumerate(h1_indices):
+                end = h1_indices[index + 1] if index + 1 < len(h1_indices) else len(events)
+                title = str(events[start].get("title") or f"{fallback_title} part {index + 1}")
+                text = self._events_to_text(events[start:end])
+                if text:
+                    sections.append({"title": title, "text": text})
+            return sections
+
+        if len(h1_indices) == 1:
+            h1_start = h1_indices[0]
+            h1_title = str(events[h1_start].get("title") or fallback_title)
+            h2_indices = [
+                index
+                for index, event in enumerate(events[h1_start + 1 :], start=h1_start + 1)
+                if event["type"] == "heading" and event.get("level") == 2 and event.get("title")
+            ]
+            if h2_indices:
+                intro_text = self._events_to_text(events[h1_start : h2_indices[0]])
+                if intro_text:
+                    sections.append({"title": f"(Intro) {h1_title}", "text": intro_text})
+                for index, start in enumerate(h2_indices):
+                    end = h2_indices[index + 1] if index + 1 < len(h2_indices) else len(events)
+                    title = str(events[start].get("title") or f"{h1_title} part {index + 1}")
+                    text = self._events_to_text(events[start:end])
+                    if text:
+                        sections.append({"title": title, "text": text})
+                return sections
+
+            total_text = self._events_to_text(events[h1_start:])
+            if total_text:
+                return [{"title": h1_title, "text": total_text}]
+
+        fallback_text = self._events_to_text(events)
+        if fallback_text:
+            return [{"title": fallback_title, "text": fallback_text}]
+        return []
+
+    def _events_to_text(self, events: list[dict]) -> str:
+        parts = []
+        for event in events:
+            if event["type"] == "heading":
+                heading_title = str(event.get("title") or "").strip()
+                if heading_title:
+                    parts.append(f"\n{heading_title}.\n")
+                continue
+            parts.append(str(event.get("raw") or ""))
+        return self._normalize_extracted_text("".join(parts))
+
+    @staticmethod
+    def _slugify_title(title: str) -> str:
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "-", title.lower()).strip("-")
+        return slug or "section"
+
+    def _section_filenames(self, section_titles: list[str]) -> list[str]:
+        counts = {}
+        filenames = []
+        for title in section_titles:
+            base_slug = self._slugify_title(title)
+            counts[base_slug] = counts.get(base_slug, 0) + 1
+            if counts[base_slug] == 1:
+                filenames.append(base_slug)
+            else:
+                filenames.append(f"{base_slug}-{counts[base_slug]}")
+        return filenames
+
+    @staticmethod
+    def _estimate_duration_seconds(text: str) -> float:
+        words = len(re.findall(r"\b\w+\b", text))
+        if not words:
+            return 0.0
+        # Conservative estimate for speech pace before exact durations exist.
+        return (words / 160.0) * 60.0
+
+    @staticmethod
+    def _source_slug(source_rel_path: str) -> str:
+        source_path = Path(source_rel_path).with_suffix("").as_posix().strip("/")
+        if not source_path:
+            return "page"
+        parts = [quote(part, safe="-_.~") for part in source_path.split("/")]
+        return "/".join(part or "page" for part in parts)
+
+    def _cache_paths(self, source_rel_path: str, section_slug: str) -> tuple[Path, Path]:
+        source_slug = self._source_slug(source_rel_path)
+        audio_path = self._audio_cache_dir / source_slug / f"{section_slug}.mp3"
         return audio_path, audio_path.with_suffix(".mp3.json")
+
+    @staticmethod
+    def _load_json_metadata(metadata_path: Path) -> dict:
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return metadata if isinstance(metadata, dict) else {}
+
+    def _normalize_pending_task(self, audio_path: Path, task) -> dict:
+        if not isinstance(task, dict):
+            raise PluginError(f"Piper TTS pending task for {audio_path} has unsupported format")
+        return {
+            "model_path": Path(task["model_path"]),
+            "config_path": Path(task["config_path"]),
+            "text": str(task["text"]),
+            "speaker_id": task.get("speaker_id"),
+            "expected_metadata": dict(task.get("expected_metadata") or {}),
+            "source_path": str(task.get("source_path") or audio_path.name),
+            "section_title": str(task.get("section_title") or "section"),
+        }
 
     @staticmethod
     def _metadata_key(metadata):
         return json.dumps(metadata, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _cache_lookup_metadata(metadata: dict) -> dict:
+        normalized = dict(metadata)
+        normalized.pop("duration_seconds", None)
+        return normalized
 
     def _cache_status(self, audio_path: Path, metadata_path: Path, expected: dict) -> tuple[bool, str]:
         if not audio_path.is_file() or audio_path.stat().st_size == 0:
@@ -845,22 +1217,24 @@ class PiperTTSPlugin(BasePlugin):
         return False, f"metadata mismatch ({', '.join(changed)})"
 
     def _remove_stale_audio(self, site_audio_dir: Path) -> None:
-        current_paths = set(self._audio_by_page.values())
-        for published_path in site_audio_dir.glob("*.mp3"):
-            if published_path.name in {path.name for path in current_paths}:
+        current_paths = {
+            track["audio_path"].relative_to(self._audio_cache_dir).as_posix()
+            for playlist in self._playlist_by_page.values()
+            for track in playlist
+        }
+        for published_path in site_audio_dir.rglob("*.mp3"):
+            published_relative = published_path.relative_to(site_audio_dir).as_posix()
+            if published_relative in current_paths:
                 continue
             published_path.unlink(missing_ok=True)
 
     def _hash_file(self, path: Path) -> str:
-        cache_key = str(path)
-        if cache_key in self._file_hashes:
-            return self._file_hashes[cache_key]
         digest = hashlib.sha256()
         with path.open("rb") as source:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(chunk)
         value = digest.hexdigest()
-        self._file_hashes[cache_key] = value
+        self._file_hashes[str(path.resolve())] = value
         return value
 
     def _relative_url(self, page: Page, target_path: str) -> str:

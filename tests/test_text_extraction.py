@@ -8,7 +8,7 @@ from mkdocs_piper_tts.plugin import PiperTTSPlugin
 def test_extract_text_adds_pauses_for_paragraphs_and_line_breaks() -> None:
     html = "<p>First paragraph</p><p>Second line<br>continues here</p><p>Done.</p>"
 
-    assert PiperTTSPlugin._extract_text(None, html) == "First paragraph. Second line, continues here. Done."
+    assert PiperTTSPlugin._extract_text(html) == "First paragraph. Second line, continues here. Done."
 
 
 def test_missing_voice_error_lists_expected_paths_and_download_urls(tmp_path: Path) -> None:

@@ -65,7 +65,7 @@ def _build_example(tmp_path: Path, model_dir: Path, *, use_cuda: bool) -> subpro
 def _assert_build(result: subprocess.CompletedProcess[str], project_dir: Path, provider: str) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert provider in result.stdout + result.stderr
-    assert list((project_dir / "site" / "assets" / "piper-tts" / "audio").glob("*.mp3"))
+    assert list((project_dir / "site" / "assets" / "piper-tts" / "audio").rglob("*.mp3"))
 
 
 def test_example_builds_on_cpu(tmp_path: Path, test_model_dir: Path) -> None:

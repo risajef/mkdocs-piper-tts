@@ -1,7 +1,7 @@
 # mkdocs-piper-tts
 
 An MkDocs plugin that generates Piper text-to-speech audio for pages and adds
-an HTML audio control through the `piper_tts_button` template helper.
+an HTML audio playlist control through the `piper_tts_button` template helper.
 
 ## Install
 
@@ -67,6 +67,37 @@ Render the control in an MkDocs template with:
 ```jinja2
 {{ piper_tts_button(page) }}
 ```
+
+Render an additional reading-time element with:
+
+```jinja2
+{{ piper_tts_reading_time(page) }}
+```
+
+Both helpers are also available as:
+
+```jinja2
+{{ piper_tts_playlist(page) }}
+{{ piper_tts_reading_time(page, "approximate reading time:") }}
+```
+
+## Section And Playlist Rules
+
+Audio is generated per page section and then played as an ordered playlist:
+
+- When a page has multiple `h1` elements, one audio file is generated per `h1`
+  section.
+- When a page has exactly one `h1` and one or more `h2` elements:
+  - the first audio file covers the `h1` content until the first `h2` and is
+    named from the title as `(Intro) <h1 title>`
+  - one audio file is generated for each `h2` section
+- When a page has exactly one `h1` and no `h2`, one audio file is generated for
+  the full page (not an intro), named from the `h1` title.
+
+Generated audio files are stored under a page-specific directory and named from
+their section titles (slugged and made unique when duplicates exist).
+
+The rendered player auto-advances through the playlist track-by-track.
 
 For a more extensive production example, see [retoweber.info](https://retoweber.info/),
 which uses this plugin for its English and German pages.

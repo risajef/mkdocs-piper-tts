@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import html as html_lib
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,9 +123,12 @@ def test_cache_paths_status_and_hashing(tmp_path: Path) -> None:
     first_hash = plugin._hash_file(source)
     source.write_text("changed", encoding="utf-8")
 
-    assert plugin._hash_file(source) == first_hash
-    audio_path, metadata_path = plugin._cache_paths("guide/Über view.md", first_hash)
-    assert audio_path.name.endswith(f"-{first_hash[:12]}.mp3")
+    assert plugin._hash_file(source) != first_hash
+    audio_path, metadata_path = plugin._cache_paths("guide/Über view.md", "intro")
+    assert audio_path.relative_to(plugin._audio_cache_dir).as_posix() == "guide/%C3%9Cber%20view/intro.mp3"
+    unicode_page_path, _ = plugin._cache_paths("你好.md", "intro")
+    japanese_page_path, _ = plugin._cache_paths("こんにちは.md", "intro")
+    assert unicode_page_path != japanese_page_path
     assert metadata_path == audio_path.with_suffix(".mp3.json")
     assert plugin._cache_status(audio_path, metadata_path, {"source_hash": first_hash}) == (False, "audio missing or empty")
 
@@ -157,11 +162,15 @@ def test_page_content_queues_then_reuses_cached_audio(tmp_path: Path) -> None:
 
     html = "<p>Hello world</p>"
     assert plugin.on_page_content(html, page=page, config=config, files=[]) == html
-    audio_path, (_, _, text, speaker_id, expected_metadata, source_path) = next(iter(plugin._pending_audio.items()))
-    assert text == "Hello world"
-    assert speaker_id is None
-    assert source_path == "page.md"
+    audio_path, task = next(iter(plugin._pending_audio.items()))
+    assert task["text"] == "Hello world"
+    assert task["speaker_id"] is None
+    assert task["source_path"] == "page.md"
+    assert task["section_title"] == "Page"
+    expected_metadata = task["expected_metadata"]
     assert plugin._cache_misses == 1
+    assert plugin._playlist_by_page["page.md"][0]["title"] == "Page"
+    assert plugin._playlist_by_page["page.md"][0]["duration_seconds"] > 0
 
     audio_path.parent.mkdir(parents=True, exist_ok=True)
     audio_path.write_bytes(b"mp3")
@@ -172,6 +181,45 @@ def test_page_content_queues_then_reuses_cached_audio(tmp_path: Path) -> None:
     assert plugin._cache_hits == 1
     assert plugin._pending_audio == {}
     assert plugin._audio_by_page["page.md"] == audio_path
+
+
+def test_page_content_invalidates_cache_when_voice_changes(tmp_path: Path) -> None:
+    plugin, config = _configured_plugin(tmp_path)
+    model_dir = tmp_path / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_a = model_dir / "voice-a.onnx"
+    config_a = model_dir / "voice-a.onnx.json"
+    model_b = model_dir / "voice-b.onnx"
+    config_b = model_dir / "voice-b.onnx.json"
+    model_a.write_bytes(b"voice-a")
+    config_a.write_text("{}", encoding="utf-8")
+    model_b.write_bytes(b"voice-b")
+    config_b.write_text("{}", encoding="utf-8")
+
+    plugin._languages = {"en": {"model": model_a.name, "config": config_a.name}}
+    source = Path(config["docs_dir"]) / "page.md"
+    source.write_text("# Page", encoding="utf-8")
+    page_file = SimpleNamespace(abs_src_path=str(source), src_path="page.md")
+    page = SimpleNamespace(meta={"lang": "en"}, file=page_file)
+
+    html = "<p>Hello world</p>"
+    plugin.on_page_content(html, page=page, config=config, files=[])
+    audio_path, task = next(iter(plugin._pending_audio.items()))
+    expected_metadata = task["expected_metadata"]
+
+    audio_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_path.write_bytes(b"mp3")
+    audio_path.with_suffix(".mp3.json").write_text(json.dumps(expected_metadata), encoding="utf-8")
+    plugin._pending_audio.clear()
+    plugin._cache_hits = 0
+    plugin._cache_misses = 0
+
+    plugin._languages = {"en": {"model": model_b.name, "config": config_b.name}}
+    plugin.on_page_content(html, page=page, config=config, files=[])
+
+    assert plugin._cache_hits == 0
+    assert plugin._cache_misses == 1
+    assert audio_path in plugin._pending_audio
 
 
 def test_page_content_skips_unknown_language_and_rejects_missing_source(tmp_path: Path) -> None:
@@ -189,17 +237,34 @@ def test_page_content_skips_unknown_language_and_rejects_missing_source(tmp_path
 
 def test_render_button_urls_escapes_labels_and_registers_template_helper(tmp_path: Path) -> None:
     plugin, _ = _configured_plugin(tmp_path)
-    plugin._audio_by_page = {"guide/page.md": Path("voice.mp3")}
+    plugin._playlist_by_page = {
+        "guide/page.md": [
+            {
+                "title": "Intro",
+                "audio_path": plugin._audio_cache_dir / "guide" / "page" / "voice.mp3",
+                "duration_seconds": 10.0,
+            }
+        ]
+    }
+    plugin._audio_by_page = {"guide/page.md": plugin._audio_cache_dir / "guide" / "page" / "voice.mp3"}
     plugin._languages = {"en": {"label": "Listen & learn"}}
     page = SimpleNamespace(file=SimpleNamespace(src_path="guide/page.md"), meta={"lang": "en"}, url="guide/page/")
 
     rendered = str(plugin.render_button(page))
-    assert 'src="../../assets/piper-tts/audio/voice.mp3"' in rendered
+    assert 'src="../../assets/piper-tts/audio/guide/page/voice.mp3"' in rendered
     assert 'aria-label="Listen &amp; learn"' in rendered
+    assert "piper-tts-button-playlist" in rendered
+    assert "data-playlist" in rendered
+    playlist_match = re.search(r'data-playlist="([^"]+)"', rendered)
+    assert playlist_match is not None
+    playlist = json.loads(html_lib.unescape(playlist_match.group(1)))
+    assert playlist == [{"title": "Intro", "url": "../../assets/piper-tts/audio/guide/page/voice.mp3"}]
     assert str(plugin.render_button()) == ""
     env = SimpleNamespace(globals={})
     assert plugin.on_env(env, {}, []) is env
     assert env.globals["piper_tts_button"] == plugin.render_button
+    assert env.globals["piper_tts_playlist"] == plugin.render_button
+    assert env.globals["piper_tts_reading_time"] == plugin.render_reading_time
 
 
 @pytest.mark.parametrize(
@@ -223,18 +288,24 @@ def test_post_build_copies_cached_audio_and_cache_only_mode_reports_pending(tmp_
     cached_audio = plugin._audio_cache_dir / "cached.mp3"
     cached_audio.parent.mkdir(parents=True, exist_ok=True)
     cached_audio.write_bytes(b"mp3")
+    plugin._playlist_by_page = {"cached.md": [{"title": "Cached", "audio_path": cached_audio, "duration_seconds": 1.0}]}
+    stale_site_audio = Path(config.site_dir) / "assets" / "piper-tts" / "audio" / "stale.mp3"
+    stale_site_audio.parent.mkdir(parents=True, exist_ok=True)
+    stale_site_audio.write_bytes(b"stale")
 
     plugin.on_post_build(config)
     assert (Path(config.site_dir) / "assets" / "piper-tts" / "audio" / "cached.mp3").read_bytes() == b"mp3"
+    assert not stale_site_audio.exists()
 
-    plugin._pending_audio[plugin._audio_cache_dir / "new.mp3"] = (
-        Path("model"),
-        Path("config"),
-        "text",
-        None,
-        {},
-        "new.md",
-    )
+    plugin._pending_audio[plugin._audio_cache_dir / "new.mp3"] = {
+        "model_path": Path("model"),
+        "config_path": Path("config"),
+        "text": "text",
+        "speaker_id": None,
+        "expected_metadata": {},
+        "source_path": "new.md",
+        "section_title": "New",
+    }
     with pytest.raises(PluginError, match="cache-only build found missing or stale audio for: new.md"):
         plugin.on_post_build(config)
 
@@ -278,7 +349,15 @@ def test_generate_pending_audio_creates_real_mp3_from_piper_voice(tmp_path: Path
     audio_path = plugin._audio_cache_dir / "real-synthesis.mp3"
     expected_metadata = {"plugin_hash": "test", "source_hash": "real-synthesis"}
     plugin._pending_audio = {
-        audio_path: (model_path, config_path, "This is a real Piper synthesis test.", None, expected_metadata, "test.md"),
+        audio_path: {
+            "model_path": model_path,
+            "config_path": config_path,
+            "text": "This is a real Piper synthesis test.",
+            "speaker_id": None,
+            "expected_metadata": expected_metadata,
+            "source_path": "test.md",
+            "section_title": "test",
+        },
     }
 
     plugin._generate_pending_audio()
@@ -286,4 +365,45 @@ def test_generate_pending_audio_creates_real_mp3_from_piper_voice(tmp_path: Path
     assert audio_path.is_file()
     assert audio_path.stat().st_size > 0
     assert audio_path.read_bytes()[:3] in {b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}
-    assert json.loads(audio_path.with_suffix(".mp3.json").read_text(encoding="utf-8")) == expected_metadata
+    metadata = json.loads(audio_path.with_suffix(".mp3.json").read_text(encoding="utf-8"))
+    assert metadata["plugin_hash"] == expected_metadata["plugin_hash"]
+    assert metadata["source_hash"] == expected_metadata["source_hash"]
+    assert metadata["duration_seconds"] > 0
+
+
+def test_extract_sections_for_single_h1_with_intro_and_h2_playlist() -> None:
+    plugin = PiperTTSPlugin()
+    html = "<h1>Main Topic</h1><p>Welcome.</p><h2>Setup</h2><p>Install this.</p><h2>Run</h2><p>Execute.</p>"
+
+    sections = plugin._extract_sections(html, fallback_title="Fallback")
+
+    assert [section["title"] for section in sections] == ["(Intro) Main Topic", "Setup", "Run"]
+    assert "Main Topic" in sections[0]["text"]
+    assert "Setup" in sections[1]["text"]
+
+
+def test_extract_sections_for_single_h1_without_h2_is_total() -> None:
+    plugin = PiperTTSPlugin()
+    html = "<h1>Only Title</h1><p>All content.</p>"
+
+    sections = plugin._extract_sections(html, fallback_title="Fallback")
+
+    assert len(sections) == 1
+    assert sections[0]["title"] == "Only Title"
+    assert "All content" in sections[0]["text"]
+
+
+def test_render_reading_time_sums_playlist_duration(tmp_path: Path) -> None:
+    plugin, _ = _configured_plugin(tmp_path)
+    plugin._playlist_by_page = {
+        "guide/page.md": [
+            {"title": "Intro", "audio_path": plugin._audio_cache_dir / "a.mp3", "duration_seconds": 61.1},
+            {"title": "Body", "audio_path": plugin._audio_cache_dir / "b.mp3", "duration_seconds": 59.0},
+        ]
+    }
+    page = SimpleNamespace(file=SimpleNamespace(src_path="guide/page.md"))
+
+    rendered = str(plugin.render_reading_time(page))
+
+    assert "approximate reading time:" in rendered
+    assert "2m00s" in rendered

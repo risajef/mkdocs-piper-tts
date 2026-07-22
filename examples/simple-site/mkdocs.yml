@@ -13,6 +13,7 @@ plugins:
       audio_dir: audio
       use_cuda: false
       batch_size: 1
+      insert_reading_time_after_heading: true
       languages:
         en:
           model: en_US-lessac-medium.onnx

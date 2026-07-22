@@ -24,26 +24,52 @@ from mkdocs.plugins import BasePlugin, get_plugin_logger
 from mkdocs.structure.pages import Page
 from piper import PiperVoice
 
-
 log = get_plugin_logger(__name__)
 
 DEFAULT_LANGUAGES = {
     "de": {
         "model": "de_DE-thorsten-medium.onnx",
         "label": "Vorlesen",
+        "reading_time_label": "Ungefähre Lesezeit:",
+        "prev_label": "Vorheriger Titel",
+        "next_label": "Nächster Titel",
+        "play_label": "Abspielen",
+        "pause_label": "Pause",
         "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
         "de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx",
     },
     "en": {
         "model": "en_US-lessac-medium.onnx",
         "label": "Listen",
+        "reading_time_label": "Approximate reading time:",
+        "prev_label": "Previous track",
+        "next_label": "Next track",
+        "play_label": "Play",
+        "pause_label": "Pause",
         "download_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
         "en/en_US/lessac/medium/en_US-lessac-medium.onnx",
     },
 }
 
+DEFAULT_READING_TIME_LABEL = "approximate reading time:"
 
-def _log_timing(label: str, started: float, *, plugin_started: float | None = None, level: str = "info"):
+DEFAULT_PLAYER_LABELS = {
+    "prev_label": "Previous track",
+    "next_label": "Next track",
+    "play_label": "Play",
+    "pause_label": "Pause",
+}
+
+_FIRST_H1_CLOSE_RE = re.compile(r"</h1\s*>", re.IGNORECASE)
+
+
+def _log_timing(
+    label: str,
+    started: float,
+    *,
+    plugin_started: float | None = None,
+    level: str = "info",
+):
     """Log wall-clock and monotonic timing so build phases can be correlated."""
     elapsed = time.perf_counter() - started
     since_plugin = ""
@@ -99,7 +125,9 @@ def _load_voice(
         plugin_started=plugin_started,
     )
     started = time.perf_counter()
-    config = PiperConfig.from_dict(json.loads(Path(config_path).read_text(encoding="utf-8")))
+    config = PiperConfig.from_dict(
+        json.loads(Path(config_path).read_text(encoding="utf-8"))
+    )
     session_options = onnxruntime.SessionOptions()
     _log_timing(
         "Piper config/session options",
@@ -126,7 +154,9 @@ def _load_voice(
     started = time.perf_counter()
     voice = PiperVoice(session=session, config=config)
     if use_cuda and "CUDAExecutionProvider" not in voice.session.get_providers():
-        raise RuntimeError(f"Piper TTS could not initialize CUDAExecutionProvider; providers={voice.session.get_providers()}")
+        raise RuntimeError(
+            f"Piper TTS could not initialize CUDAExecutionProvider; providers={voice.session.get_providers()}"
+        )
     _log_timing(
         "Piper voice initialization",
         started,
@@ -163,10 +193,14 @@ def _audio_from_batch(
     inputs = {
         "input": input_ids,
         "input_lengths": input_lengths,
-        "scales": np.asarray([noise_scale, length_scale, noise_w_scale], dtype=np.float32),
+        "scales": np.asarray(
+            [noise_scale, length_scale, noise_w_scale], dtype=np.float32
+        ),
     }
     if voice.config.num_speakers > 1:
-        inputs["sid"] = np.full(len(phoneme_ids), 0 if speaker_id is None else speaker_id, dtype=np.int64)
+        inputs["sid"] = np.full(
+            len(phoneme_ids), 0 if speaker_id is None else speaker_id, dtype=np.int64
+        )
 
     session_started = time.perf_counter()
     output = voice.session.run(None, inputs)[0][:, 0, 0, :]
@@ -259,7 +293,11 @@ def _generate_audio_batch(
                 )
                 for segment, waveform in zip(current, waveforms):
                     sample_counts[segment[0]] += len(waveform)
-                    wav_files[segment[0]].writeframes(np.clip(waveform * 32767, -32767, 32767).astype(np.int16).tobytes())
+                    wav_files[segment[0]].writeframes(
+                        np.clip(waveform * 32767, -32767, 32767)
+                        .astype(np.int16)
+                        .tobytes()
+                    )
                 if inference_progress_callback is not None:
                     inference_progress_callback(
                         inference_batches,
@@ -311,7 +349,10 @@ def _generate_audio_batch(
                 text=True,
             )
             if result.returncode != 0:
-                error = result.stderr.strip() or f"ffmpeg exited with code {result.returncode}"
+                error = (
+                    result.stderr.strip()
+                    or f"ffmpeg exited with code {result.returncode}"
+                )
                 raise RuntimeError(f"Piper TTS MP3 conversion failed: {error}")
             # The temporary directory may be on a different filesystem
             # (e.g. /tmp versus the project volume), so Path.replace() can
@@ -347,13 +388,32 @@ class _PageTextExtractor(HTMLParser):
             self.ignored_depth += 1
         elif not self.ignored_depth and tag == "br":
             self.parts.append(", ")
-        elif not self.ignored_depth and tag in {"div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "p", "pre"}:
+        elif not self.ignored_depth and tag in {
+            "div",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "li",
+            "p",
+            "pre",
+        }:
             self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style", "noscript"} and self.ignored_depth:
             self.ignored_depth -= 1
-        elif not self.ignored_depth and tag in {"h1", "h2", "h3", "h4", "h5", "h6", "li"}:
+        elif not self.ignored_depth and tag in {
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "li",
+        }:
             self.parts.append(".\n")
         elif not self.ignored_depth and tag in {"div", "li", "p", "pre"}:
             self.parts.append("\n")
@@ -459,6 +519,8 @@ class PiperTTSPlugin(BasePlugin):
         ("generate_audio", config_options.Type(bool, default=True)),
         ("use_cuda", config_options.Type(bool, default=False)),
         ("batch_size", config_options.Type(int, default=1)),
+        ("insert_reading_time_after_heading", config_options.Type(bool, default=False)),
+        ("reading_time_min_seconds", config_options.Type(float, default=0.0)),
     )
 
     def on_config(self, config: dict) -> None:
@@ -480,7 +542,9 @@ class PiperTTSPlugin(BasePlugin):
         self._text_elapsed = 0.0
         self._cache_check_elapsed = 0.0
         config_path = getattr(config, "config_file_path", None)
-        self._project_dir = Path(config_path).parent.resolve() if config_path else Path.cwd().resolve()
+        self._project_dir = (
+            Path(config_path).parent.resolve() if config_path else Path.cwd().resolve()
+        )
         self._docs_dir = Path(config["docs_dir"])
         if not self._docs_dir.is_absolute():
             self._docs_dir = self._project_dir / self._docs_dir
@@ -507,7 +571,9 @@ class PiperTTSPlugin(BasePlugin):
                 continue
             audio_path = metadata_path.with_suffix("")
             if audio_path.is_file() and audio_path.stat().st_size:
-                self._cache_index[self._metadata_key(self._cache_lookup_metadata(metadata))] = (
+                self._cache_index[
+                    self._metadata_key(self._cache_lookup_metadata(metadata))
+                ] = (
                     audio_path,
                     metadata_path,
                 )
@@ -526,6 +592,7 @@ class PiperTTSPlugin(BasePlugin):
         env.globals["piper_tts_button"] = self.render_button
         env.globals["piper_tts_playlist"] = self.render_button
         env.globals["piper_tts_reading_time"] = self.render_reading_time
+        env.globals["piper_tts_controls"] = self.render_controls
         return env
 
     def on_page_content(self, html_content: str, *, page, config, files) -> str:
@@ -566,7 +633,9 @@ class PiperTTSPlugin(BasePlugin):
             fallback_title=str(getattr(page, "title", "") or "Page"),
         )
         self._text_elapsed += time.perf_counter() - text_started
-        section_filenames = self._section_filenames([section["title"] for section in sections])
+        section_filenames = self._section_filenames(
+            [section["title"] for section in sections]
+        )
         playlist_entries = []
         cache_logs = []
 
@@ -574,7 +643,9 @@ class PiperTTSPlugin(BasePlugin):
             section_text = section["text"]
             section_title = section["title"]
             section_hash = hashlib.sha256(section_text.encode("utf-8")).hexdigest()
-            audio_path, metadata_path = self._cache_paths(page.file.src_path, section_filenames[index])
+            audio_path, metadata_path = self._cache_paths(
+                page.file.src_path, section_filenames[index]
+            )
             expected_metadata = {
                 "plugin_hash": self._plugin_hash,
                 "source_hash": source_hash,
@@ -592,7 +663,9 @@ class PiperTTSPlugin(BasePlugin):
                 expected_metadata,
             )
             if not cache_valid and cache_reason == "audio missing or empty":
-                cached_paths = self._cache_index.get(self._metadata_key(expected_metadata))
+                cached_paths = self._cache_index.get(
+                    self._metadata_key(expected_metadata)
+                )
                 if cached_paths is not None:
                     cached_audio_path, cached_metadata_path = cached_paths
                     cache_valid, cache_reason = self._cache_status(
@@ -624,7 +697,11 @@ class PiperTTSPlugin(BasePlugin):
                 cache_logs.append((section_title, cache_reason))
             else:
                 self._cache_hits += 1
-                log.debug("Reusing cached Piper TTS MP3 for %s [%s]", page.file.src_path, section_title)
+                log.debug(
+                    "Reusing cached Piper TTS MP3 for %s [%s]",
+                    page.file.src_path,
+                    section_title,
+                )
 
             section_metadata = self._load_json_metadata(metadata_path)
             duration_seconds = self._estimate_duration_seconds(section_text)
@@ -639,7 +716,9 @@ class PiperTTSPlugin(BasePlugin):
             )
 
         self._playlist_by_page[page.file.src_path] = playlist_entries
-        self._audio_by_page[page.file.src_path] = playlist_entries[0]["audio_path"] if playlist_entries else None
+        self._audio_by_page[page.file.src_path] = (
+            playlist_entries[0]["audio_path"] if playlist_entries else None
+        )
         self._page_scan_elapsed += time.perf_counter() - page_started
         for section_title, cache_reason in cache_logs:
             log.info(
@@ -654,12 +733,18 @@ class PiperTTSPlugin(BasePlugin):
                 page_started,
                 plugin_started=self._timing_started,
             )
+        if self.config["insert_reading_time_after_heading"]:
+            reading_time_markup = str(self.render_reading_time(page))
+            html_content = self._insert_after_first_heading(
+                html_content, reading_time_markup
+            )
         return html_content
 
     def on_post_build(self, config: dict) -> None:
         post_build_started = time.perf_counter()
         log.info(
-            "Piper TTS cache summary: eligible_pages=%d cache_hits=%d " "cache_misses=%d pending=%d scan_time=%.3fs",
+            "Piper TTS cache summary: eligible_pages=%d cache_hits=%d "
+            "cache_misses=%d pending=%d scan_time=%.3fs",
             self._eligible_pages,
             self._cache_hits,
             self._cache_misses,
@@ -667,7 +752,8 @@ class PiperTTSPlugin(BasePlugin):
             self._page_scan_elapsed,
         )
         log.info(
-            "Piper TTS cache timing: file_hashes=%.3fs text_extraction=%.3fs " "cache_validation=%.3fs",
+            "Piper TTS cache timing: file_hashes=%.3fs text_extraction=%.3fs "
+            "cache_validation=%.3fs",
             self._hash_elapsed,
             self._text_elapsed,
             self._cache_check_elapsed,
@@ -689,7 +775,8 @@ class PiperTTSPlugin(BasePlugin):
             self._generate_pending_audio()
         else:
             log.info(
-                "Piper TTS: all %d audio files are cached; skipping " "Piper/ONNX Runtime initialization",
+                "Piper TTS: all %d audio files are cached; skipping "
+                "Piper/ONNX Runtime initialization",
                 self._cache_hits,
             )
         _log_timing(
@@ -702,13 +789,20 @@ class PiperTTSPlugin(BasePlugin):
         site_audio_dir = Path(config.site_dir) / self._asset_dir / self._audio_dir
         site_audio_dir.mkdir(parents=True, exist_ok=True)
         referenced_audio_paths = sorted(
-            {track["audio_path"] for playlist in self._playlist_by_page.values() for track in playlist},
+            {
+                track["audio_path"]
+                for playlist in self._playlist_by_page.values()
+                for track in playlist
+            },
             key=lambda path: str(path),
         )
         copied = 0
         for audio_path in referenced_audio_paths:
             if not audio_path.is_file() or audio_path.stat().st_size == 0:
-                log.warning("Skipping missing or empty Piper TTS MP3 referenced by playlist: %s", audio_path)
+                log.warning(
+                    "Skipping missing or empty Piper TTS MP3 referenced by playlist: %s",
+                    audio_path,
+                )
                 continue
             relative_path = audio_path.relative_to(self._audio_cache_dir)
             destination = site_audio_dir / relative_path
@@ -740,7 +834,11 @@ class PiperTTSPlugin(BasePlugin):
         grouped = {}
         for audio_path, task in self._pending_audio.items():
             task = self._normalize_pending_task(audio_path, task)
-            key = (str(task["model_path"]), str(task["config_path"]), task["speaker_id"])
+            key = (
+                str(task["model_path"]),
+                str(task["config_path"]),
+                task["speaker_id"],
+            )
             grouped.setdefault(key, []).append(
                 {
                     "audio_path": audio_path,
@@ -783,12 +881,17 @@ class PiperTTSPlugin(BasePlugin):
             try:
                 inference_reported = -1
 
-                def report_inference(done: int, total_batches: int, segments_done: int, elapsed: float) -> None:
+                def report_inference(
+                    done: int, total_batches: int, segments_done: int, elapsed: float
+                ) -> None:
                     nonlocal inference_reported
                     if not total_batches:
                         return
                     step = max(1, total_batches // 100)
-                    if done not in {0, total_batches} and done < inference_reported + step:
+                    if (
+                        done not in {0, total_batches}
+                        and done < inference_reported + step
+                    ):
                         return
                     inference_reported = done
                     percent = done * 100 / total_batches
@@ -797,7 +900,8 @@ class PiperTTSPlugin(BasePlugin):
                     rate = done / elapsed if elapsed else 0.0
                     eta = (total_batches - done) / rate if rate else 0.0
                     log.info(
-                        "Piper TTS inference: [%s] %d/%d batches " "(%.1f%%), %d segments, %.2f batches/s, ETA %s",
+                        "Piper TTS inference: [%s] %d/%d batches "
+                        "(%.1f%%), %d segments, %.2f batches/s, ETA %s",
                         bar,
                         done,
                         total_batches,
@@ -838,18 +942,25 @@ class PiperTTSPlugin(BasePlugin):
                 )
             except Exception as error:
                 source_path = group[0]["source_path"]
-                raise PluginError(f"Piper TTS synthesis failed for {source_path}: {error}") from error
+                raise PluginError(
+                    f"Piper TTS synthesis failed for {source_path}: {error}"
+                ) from error
 
             for task in group:
                 audio_path = task["audio_path"]
                 metadata_path = audio_path.with_suffix(".mp3.json")
                 expected_metadata = dict(task["expected_metadata"])
-                expected_metadata["duration_seconds"] = round(float(durations.get(str(audio_path), 0.0)), 3)
+                expected_metadata["duration_seconds"] = round(
+                    float(durations.get(str(audio_path), 0.0)), 3
+                )
                 metadata_path.write_text(
                     json.dumps(expected_metadata, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
-                self._cache_index[self._metadata_key(task["expected_metadata"])] = (audio_path, metadata_path)
+                self._cache_index[self._metadata_key(task["expected_metadata"])] = (
+                    audio_path,
+                    metadata_path,
+                )
             log.info(
                 "Finished Piper TTS batch for %s in %.1fs",
                 model_path,
@@ -879,9 +990,26 @@ class PiperTTSPlugin(BasePlugin):
             return f"{minutes}m{seconds:02d}s"
         return f"{seconds}s"
 
-    def render_button(self, page: Page | None = None, label: str | None = None) -> Markup:
+    def render_button(
+        self, page: Page | None = None, label: str | None = None, *, mode: str = "list"
+    ) -> Markup:
+        """Render the audio playlist control.
+
+        `mode="list"` (the default) renders the browser's native `<audio
+        controls>` element plus an ordered playlist of track buttons.
+        `mode="compact"` instead renders a title+prev/next+play/pause bar
+        driven entirely by plugin-owned markup and script, so consuming
+        themes do not need to reimplement it against internal DOM details.
+        See the README's "Theming API" section for the stable CSS classes
+        both modes expose.
+        """
+
         if page is None:
             return Markup("")
+        if mode not in {"list", "compact"}:
+            raise PluginError(
+                f"Piper TTS player mode must be 'list' or 'compact', got {mode!r}"
+            )
 
         source_path = getattr(page.file, "src_path", "")
         playlist = self._playlist_by_page.get(source_path, [])
@@ -890,7 +1018,7 @@ class PiperTTSPlugin(BasePlugin):
 
         metadata = getattr(page, "meta", {}) or {}
         language = str(metadata.get("lang") or "").lower().split("-", maxsplit=1)[0]
-        voice = self._languages.get(language, {})
+        voice = self._languages.get(language) or {}
         audio_label = label or voice.get("label") or language
         playlist_urls = []
         for track in playlist:
@@ -905,77 +1033,215 @@ class PiperTTSPlugin(BasePlugin):
         if not playlist_urls:
             return Markup("")
 
-        player_id = f"piper-tts-{hashlib.sha1(source_path.encode('utf-8')).hexdigest()[:12]}"
+        player_id = (
+            f"piper-tts-{hashlib.sha1(source_path.encode('utf-8')).hexdigest()[:12]}"
+        )
         player_container_id = f"{player_id}-container"
         audio_class = self.config["button_class"].strip() or "piper-tts-button"
         playlist_json = json.dumps(playlist_urls)
         list_items = "".join(
-            "<li>" f'<button type="button" data-track-index="{index}">' f"{html.escape(str(track['title']))}</button>" "</li>"
+            "<li>"
+            f'<button type="button" data-track-index="{index}">'
+            f"{html.escape(str(track['title']))}</button>"
+            "</li>"
             for index, track in enumerate(playlist_urls)
         )
-        attributes = {
-            "id": player_id,
-            "class": audio_class,
-            "controls": "",
-            "preload": "none",
-            "aria-label": audio_label,
-            "title": audio_label,
-            "src": playlist_urls[0]["url"],
-            "data-playlist": playlist_json,
-        }
-        rendered_attributes = " ".join(
-            f'{name}="{html.escape(str(value), quote=True)}"' if value else name for name, value in attributes.items()
+        attributes = {"id": player_id, "class": audio_class}
+        if mode == "list":
+            attributes["controls"] = ""
+        attributes.update(
+            {
+                "preload": "none",
+                "aria-label": audio_label,
+                "title": audio_label,
+                "src": playlist_urls[0]["url"],
+                "data-playlist": playlist_json,
+            }
         )
+        rendered_attributes = " ".join(
+            f'{name}="{html.escape(str(value), quote=True)}"' if value else name
+            for name, value in attributes.items()
+        )
+        wrapper_class = html.escape(audio_class, quote=True)
+        wrapper_extra_class = " piper-tts-mode-compact" if mode == "compact" else ""
+        compact_bar_markup = ""
+        if mode == "compact":
+            compact_bar_markup = self._render_compact_bar(
+                voice, str(playlist_urls[0]["title"])
+            )
+
         return Markup(
-            f'<div id="{player_container_id}" class="{html.escape(audio_class, quote=True)}-wrapper">'
+            f'<div id="{player_container_id}" class="{wrapper_class}-wrapper{wrapper_extra_class}">'
+            f"{compact_bar_markup}"
             f"<audio {rendered_attributes}>{html.escape(str(audio_label))}</audio>"
-            f'<ol class="{html.escape(audio_class, quote=True)}-playlist">{list_items}</ol>'
+            f'<ol class="{wrapper_class}-playlist">{list_items}</ol>'
             "</div>"
-            "<script>"
-            "(function () {"
-            f"var audio = document.getElementById('{player_id}');"
-            f"var container = document.getElementById('{player_container_id}');"
-            "if (!audio || !container) { return; }"
-            "var playlist;"
-            "try { playlist = JSON.parse(audio.dataset.playlist || '[]'); } catch (_error) { return; }"
-            "if (!playlist.length) { return; }"
-            "var buttons = Array.prototype.slice.call(container.querySelectorAll('button[data-track-index]'));"
-            "var currentIndex = 0;"
-            "function markActive(index) {"
-            "  currentIndex = index;"
-            "  buttons.forEach(function (button, buttonIndex) {"
-            "    var active = buttonIndex === index;"
-            "    button.setAttribute('aria-current', active ? 'true' : 'false');"
-            "  });"
-            "}"
-            "function loadTrack(index, autoplay) {"
-            "  if (index < 0 || index >= playlist.length) { return; }"
-            "  markActive(index);"
-            "  if (audio.getAttribute('src') !== playlist[index].url) {"
-            "    audio.setAttribute('src', playlist[index].url);"
-            "    audio.load();"
-            "  }"
-            "  if (autoplay) {"
-            "    var playPromise = audio.play();"
-            "    if (playPromise && typeof playPromise.catch === 'function') {"
-            "      playPromise.catch(function () {});"
-            "    }"
-            "  }"
-            "}"
-            "buttons.forEach(function (button, index) {"
-            "  button.addEventListener('click', function () { loadTrack(index, true); });"
-            "});"
-            "audio.addEventListener('ended', function () {"
-            "  if (currentIndex + 1 < playlist.length) {"
-            "    loadTrack(currentIndex + 1, true);"
-            "  }"
-            "});"
-            "markActive(0);"
-            "})();"
-            "</script>"
+            f"<script>{self._player_script(player_id, player_container_id, compact=mode == 'compact', labels=voice)}</script>"
         )
 
-    def render_reading_time(self, page: Page | None = None, label: str = "approximate reading time:") -> Markup:
+    def _render_compact_bar(self, voice: dict, first_track_title: str) -> str:
+        labels = {
+            key: str(voice.get(key) or default)
+            for key, default in DEFAULT_PLAYER_LABELS.items()
+        }
+        return (
+            '<div class="piper-tts-compact-bar">'
+            f'<button type="button" class="piper-tts-prev" aria-label="{html.escape(labels["prev_label"], quote=True)}">'
+            "\u23ee</button>"
+            f'<button type="button" class="piper-tts-play-pause" aria-label="{html.escape(labels["play_label"], quote=True)}">'
+            "\u25b6</button>"
+            f'<button type="button" class="piper-tts-now-playing" aria-expanded="false">'
+            f"{html.escape(first_track_title)}</button>"
+            f'<button type="button" class="piper-tts-next" aria-label="{html.escape(labels["next_label"], quote=True)}">'
+            "\u23ed</button>"
+            "</div>"
+        )
+
+    @staticmethod
+    def _player_script(
+        player_id: str,
+        player_container_id: str,
+        *,
+        compact: bool,
+        labels: dict | None = None,
+    ) -> str:
+        parts = [
+            "(function () {",
+            f"var audio = document.getElementById('{player_id}');",
+            f"var container = document.getElementById('{player_container_id}');",
+            "if (!audio || !container) { return; }",
+            "var playlist;",
+            "try { playlist = JSON.parse(audio.dataset.playlist || '[]'); } catch (_error) { return; }",
+            "if (!playlist.length) { return; }",
+            "var buttons = Array.prototype.slice.call(container.querySelectorAll('button[data-track-index]'));",
+            "var currentIndex = 0;",
+            "var onActiveChange = function () {};",
+            "function markActive(index) {",
+            "  currentIndex = index;",
+            "  buttons.forEach(function (button, buttonIndex) {",
+            "    var active = buttonIndex === index;",
+            "    button.setAttribute('aria-current', active ? 'true' : 'false');",
+            "  });",
+            "  onActiveChange();",
+            "}",
+            "function loadTrack(index, autoplay) {",
+            "  if (index < 0 || index >= playlist.length) { return; }",
+            "  markActive(index);",
+            "  if (audio.getAttribute('src') !== playlist[index].url) {",
+            "    audio.setAttribute('src', playlist[index].url);",
+            "    audio.load();",
+            "  }",
+            "  if (autoplay) {",
+            "    var playPromise = audio.play();",
+            "    if (playPromise && typeof playPromise.catch === 'function') {",
+            "      playPromise.catch(function () {});",
+            "    }",
+            "  }",
+            "}",
+        ]
+
+        if compact:
+            labels = labels or {}
+            resolved_labels = {
+                key: str(labels.get(key) or default)
+                for key, default in DEFAULT_PLAYER_LABELS.items()
+            }
+            parts.extend(
+                [
+                    "var playlistElement = container.querySelector('ol');",
+                    "var prevButton = container.querySelector('.piper-tts-prev');",
+                    "var nextButton = container.querySelector('.piper-tts-next');",
+                    "var playPauseButton = container.querySelector('.piper-tts-play-pause');",
+                    "var nowPlayingButton = container.querySelector('.piper-tts-now-playing');",
+                    f"var playLabel = {json.dumps(resolved_labels['play_label'])};",
+                    f"var pauseLabel = {json.dumps(resolved_labels['pause_label'])};",
+                    "function collapsePlaylist() {",
+                    "  if (!playlistElement) { return; }",
+                    "  playlistElement.classList.remove('piper-tts-playlist-expanded');",
+                    "  if (nowPlayingButton) { nowPlayingButton.setAttribute('aria-expanded', 'false'); }",
+                    "}",
+                    "function syncCompactState() {",
+                    "  if (nowPlayingButton) { nowPlayingButton.textContent = playlist[currentIndex].title; }",
+                    "  if (prevButton) { prevButton.disabled = currentIndex <= 0; }",
+                    "  if (nextButton) { nextButton.disabled = currentIndex >= playlist.length - 1; }",
+                    "}",
+                    "onActiveChange = syncCompactState;",
+                    "if (prevButton) {",
+                    "  prevButton.addEventListener('click', function () {",
+                    "    if (currentIndex > 0) { loadTrack(currentIndex - 1, true); }",
+                    "  });",
+                    "}",
+                    "if (nextButton) {",
+                    "  nextButton.addEventListener('click', function () {",
+                    "    if (currentIndex < playlist.length - 1) { loadTrack(currentIndex + 1, true); }",
+                    "  });",
+                    "}",
+                    "if (playPauseButton) {",
+                    "  playPauseButton.addEventListener('click', function () {",
+                    "    if (audio.paused) {",
+                    "      var playPromise = audio.play();",
+                    "      if (playPromise && typeof playPromise.catch === 'function') { playPromise.catch(function () {}); }",
+                    "    } else {",
+                    "      audio.pause();",
+                    "    }",
+                    "  });",
+                    "}",
+                    "audio.addEventListener('play', function () {",
+                    "  if (playPauseButton) {",
+                    "    playPauseButton.textContent = '\\u275a\\u275a';",
+                    "    playPauseButton.setAttribute('aria-label', pauseLabel);",
+                    "  }",
+                    "});",
+                    "audio.addEventListener('pause', function () {",
+                    "  if (playPauseButton) {",
+                    "    playPauseButton.textContent = '\\u25b6';",
+                    "    playPauseButton.setAttribute('aria-label', playLabel);",
+                    "  }",
+                    "});",
+                    "if (nowPlayingButton) {",
+                    "  nowPlayingButton.addEventListener('click', function () {",
+                    "    if (!playlistElement) { return; }",
+                    "    var expanded = playlistElement.classList.toggle('piper-tts-playlist-expanded');",
+                    "    nowPlayingButton.setAttribute('aria-expanded', expanded ? 'true' : 'false');",
+                    "  });",
+                    "}",
+                    "buttons.forEach(function (button) { button.addEventListener('click', collapsePlaylist); });",
+                ]
+            )
+
+        parts.extend(
+            [
+                "buttons.forEach(function (button, index) {",
+                "  button.addEventListener('click', function () { loadTrack(index, true); });",
+                "});",
+                "audio.addEventListener('ended', function () {",
+                "  if (currentIndex + 1 < playlist.length) {",
+                "    loadTrack(currentIndex + 1, true);",
+                "  }",
+                "});",
+                "markActive(0);",
+                "})();",
+            ]
+        )
+        return "".join(parts)
+
+    def render_reading_time(
+        self,
+        page: Page | None = None,
+        label: str | None = None,
+        *,
+        min_seconds: float | None = None,
+    ) -> Markup:
+        """Render the summed playlist duration as a reading-time badge.
+
+        Returns an empty ``Markup`` when the page has no audio, or when the
+        total duration is below `min_seconds` (defaults to the plugin's
+        `reading_time_min_seconds` config value, itself 0 i.e. always shown).
+        Pages with only a few seconds of audio rarely warrant a reading-time
+        badge, so themes can set a threshold once instead of parsing the
+        rendered duration text.
+        """
+
         if page is None:
             return Markup("")
 
@@ -984,26 +1250,83 @@ class PiperTTSPlugin(BasePlugin):
         if not playlist:
             return Markup("")
 
-        total_duration = sum(max(0.0, float(track.get("duration_seconds") or 0.0)) for track in playlist)
-        if total_duration <= 0:
+        total_duration = sum(
+            max(0.0, float(track.get("duration_seconds") or 0.0)) for track in playlist
+        )
+        effective_min_seconds = (
+            self.config["reading_time_min_seconds"]
+            if min_seconds is None
+            else min_seconds
+        )
+        if total_duration <= 0 or total_duration < effective_min_seconds:
             return Markup("")
 
-        rendered_label = html.escape(str(label).strip() or "approximate reading time:")
-        return Markup(
-            '<span class="piper-tts-reading-time">' f"{rendered_label} {self._format_duration(total_duration)}" "</span>"
+        resolved_label = label if label is not None else self._reading_time_label(page)
+        rendered_label = html.escape(
+            str(resolved_label).strip() or DEFAULT_READING_TIME_LABEL
         )
+        return Markup(
+            '<span class="piper-tts-reading-time">'
+            f"{rendered_label} {self._format_duration(total_duration)}"
+            "</span>"
+        )
+
+    def render_controls(
+        self,
+        page: Page | None = None,
+        *,
+        audio_label: str | None = None,
+        reading_time_label: str | None = None,
+        reading_time_min_seconds: float | None = None,
+        mode: str = "list",
+    ) -> Markup:
+        """Combined helper that renders the reading time and audio player together."""
+
+        if page is None:
+            return Markup("")
+
+        reading_time_markup = self.render_reading_time(
+            page, reading_time_label, min_seconds=reading_time_min_seconds
+        )
+        player_markup = self.render_button(page, audio_label, mode=mode)
+        if not reading_time_markup and not player_markup:
+            return Markup("")
+
+        return Markup(
+            f'<div class="piper-tts-controls">{reading_time_markup}{player_markup}</div>'
+        )
+
+    def _reading_time_label(self, page: Page) -> str:
+        metadata = getattr(page, "meta", {}) or {}
+        language = str(metadata.get("lang") or "").lower().split("-", maxsplit=1)[0]
+        voice = self._languages.get(language) or {}
+        return str(voice.get("reading_time_label") or DEFAULT_READING_TIME_LABEL)
+
+    @staticmethod
+    def _insert_after_first_heading(html_content: str, injected_markup: str) -> str:
+        if not injected_markup:
+            return html_content
+        match = _FIRST_H1_CLOSE_RE.search(html_content)
+        if match is None:
+            return injected_markup + html_content
+        insert_at = match.end()
+        return html_content[:insert_at] + injected_markup + html_content[insert_at:]
 
     def _audio_rel_path(self, audio_path: Path) -> str:
         relative_path = audio_path.relative_to(self._audio_cache_dir).as_posix()
         return posixpath.join(self._asset_dir, self._audio_dir, relative_path)
 
     def _configured_languages(self) -> dict[str, dict]:
-        languages = {language: dict(voice) for language, voice in DEFAULT_LANGUAGES.items()}
+        languages = {
+            language: dict(voice) for language, voice in DEFAULT_LANGUAGES.items()
+        }
         for language, configured_voice in (self.config["languages"] or {}).items():
             normalized_language = str(language).lower().split("-", maxsplit=1)[0]
             voice = dict(configured_voice or {})
             if "model" not in voice:
-                raise PluginError(f"Piper TTS language {language!r} must define a model")
+                raise PluginError(
+                    f"Piper TTS language {language!r} must define a model"
+                )
             languages[normalized_language] = voice
 
         for voice in languages.values():
@@ -1013,16 +1336,28 @@ class PiperTTSPlugin(BasePlugin):
 
     def _voice_files(self, voice: dict, language: str) -> tuple[Path, Path]:
         model_value = Path(str(voice["model"]))
-        model_path = model_value if model_value.is_absolute() else self._model_dir / model_value
+        model_path = (
+            model_value if model_value.is_absolute() else self._model_dir / model_value
+        )
         config_value = Path(str(voice["config"]))
-        config_path = config_value if config_value.is_absolute() else self._model_dir / config_value
-        missing_paths = [path for path in (model_path, config_path) if not path.is_file()]
+        config_path = (
+            config_value
+            if config_value.is_absolute()
+            else self._model_dir / config_value
+        )
+        missing_paths = [
+            path for path in (model_path, config_path) if not path.is_file()
+        ]
         if missing_paths:
             locations = "\n".join(f"  - {path}" for path in (model_path, config_path))
             download_url = str(voice.get("download_url") or "").strip()
             download_hint = ""
             if download_url:
-                download_hint = "\nDownload the matching files from:\n" f"  - {download_url}\n" f"  - {download_url}.json"
+                download_hint = (
+                    "\nDownload the matching files from:\n"
+                    f"  - {download_url}\n"
+                    f"  - {download_url}.json"
+                )
             raise PluginError(
                 f"Piper TTS: there is no ONNX voice model and/or JSON configuration for "
                 f"language {language!r}.\nModel directory: {self._model_dir}\n"
@@ -1030,25 +1365,35 @@ class PiperTTSPlugin(BasePlugin):
             )
         return model_path.resolve(), config_path.resolve()
 
-    def _resolve_speaker_id(self, voice: dict, config_path: Path, language: str) -> int | None:
+    def _resolve_speaker_id(
+        self, voice: dict, config_path: Path, language: str
+    ) -> int | None:
         speaker = voice.get("speaker")
         if speaker is None:
             return None
 
         try:
-            speaker_map = json.loads(config_path.read_text(encoding="utf-8"))["speaker_id_map"]
+            speaker_map = json.loads(config_path.read_text(encoding="utf-8"))[
+                "speaker_id_map"
+            ]
         except (OSError, json.JSONDecodeError, KeyError) as error:
-            raise PluginError(f"Could not read Piper speaker map for language {language!r}") from error
+            raise PluginError(
+                f"Could not read Piper speaker map for language {language!r}"
+            ) from error
 
         if str(speaker) in speaker_map:
             return int(speaker_map[str(speaker)])
         try:
             speaker_id = int(speaker)
         except (TypeError, ValueError) as error:
-            raise PluginError(f"Unknown Piper speaker {speaker!r} for language {language!r}") from error
+            raise PluginError(
+                f"Unknown Piper speaker {speaker!r} for language {language!r}"
+            ) from error
 
         if speaker_id not in speaker_map.values():
-            raise PluginError(f"Unknown Piper speaker {speaker!r} for language {language!r}")
+            raise PluginError(
+                f"Unknown Piper speaker {speaker!r} for language {language!r}"
+            )
         return speaker_id
 
     @staticmethod
@@ -1069,7 +1414,9 @@ class PiperTTSPlugin(BasePlugin):
         text = re.sub(r"(\S)\s*\n[ \t]*\n+", paragraph_pause, text)
         return " ".join(text.split())
 
-    def _extract_sections(self, html_content: str, *, fallback_title: str) -> list[dict]:
+    def _extract_sections(
+        self, html_content: str, *, fallback_title: str
+    ) -> list[dict]:
         parser = _PageSectionExtractor()
         parser.feed(html_content)
         parser.close()
@@ -1081,13 +1428,21 @@ class PiperTTSPlugin(BasePlugin):
         h1_indices = [
             index
             for index, event in enumerate(events)
-            if event["type"] == "heading" and event.get("level") == 1 and event.get("title")
+            if event["type"] == "heading"
+            and event.get("level") == 1
+            and event.get("title")
         ]
 
         if len(h1_indices) > 1:
             for index, start in enumerate(h1_indices):
-                end = h1_indices[index + 1] if index + 1 < len(h1_indices) else len(events)
-                title = str(events[start].get("title") or f"{fallback_title} part {index + 1}")
+                end = (
+                    h1_indices[index + 1]
+                    if index + 1 < len(h1_indices)
+                    else len(events)
+                )
+                title = str(
+                    events[start].get("title") or f"{fallback_title} part {index + 1}"
+                )
                 text = self._events_to_text(events[start:end])
                 if text:
                     sections.append({"title": title, "text": text})
@@ -1098,16 +1453,28 @@ class PiperTTSPlugin(BasePlugin):
             h1_title = str(events[h1_start].get("title") or fallback_title)
             h2_indices = [
                 index
-                for index, event in enumerate(events[h1_start + 1 :], start=h1_start + 1)
-                if event["type"] == "heading" and event.get("level") == 2 and event.get("title")
+                for index, event in enumerate(
+                    events[h1_start + 1 :], start=h1_start + 1
+                )
+                if event["type"] == "heading"
+                and event.get("level") == 2
+                and event.get("title")
             ]
             if h2_indices:
                 intro_text = self._events_to_text(events[h1_start : h2_indices[0]])
                 if intro_text:
-                    sections.append({"title": f"(Intro) {h1_title}", "text": intro_text})
+                    sections.append(
+                        {"title": f"(Intro) {h1_title}", "text": intro_text}
+                    )
                 for index, start in enumerate(h2_indices):
-                    end = h2_indices[index + 1] if index + 1 < len(h2_indices) else len(events)
-                    title = str(events[start].get("title") or f"{h1_title} part {index + 1}")
+                    end = (
+                        h2_indices[index + 1]
+                        if index + 1 < len(h2_indices)
+                        else len(events)
+                    )
+                    title = str(
+                        events[start].get("title") or f"{h1_title} part {index + 1}"
+                    )
                     text = self._events_to_text(events[start:end])
                     if text:
                         sections.append({"title": title, "text": text})
@@ -1166,7 +1533,9 @@ class PiperTTSPlugin(BasePlugin):
         parts = [quote(part, safe="-_.~") for part in source_path.split("/")]
         return "/".join(part or "page" for part in parts)
 
-    def _cache_paths(self, source_rel_path: str, section_slug: str) -> tuple[Path, Path]:
+    def _cache_paths(
+        self, source_rel_path: str, section_slug: str
+    ) -> tuple[Path, Path]:
         source_slug = self._source_slug(source_rel_path)
         audio_path = self._audio_cache_dir / source_slug / f"{section_slug}.mp3"
         return audio_path, audio_path.with_suffix(".mp3.json")
@@ -1181,7 +1550,9 @@ class PiperTTSPlugin(BasePlugin):
 
     def _normalize_pending_task(self, audio_path: Path, task) -> dict:
         if not isinstance(task, dict):
-            raise PluginError(f"Piper TTS pending task for {audio_path} has unsupported format")
+            raise PluginError(
+                f"Piper TTS pending task for {audio_path} has unsupported format"
+            )
         return {
             "model_path": Path(task["model_path"]),
             "config_path": Path(task["config_path"]),
@@ -1202,7 +1573,9 @@ class PiperTTSPlugin(BasePlugin):
         normalized.pop("duration_seconds", None)
         return normalized
 
-    def _cache_status(self, audio_path: Path, metadata_path: Path, expected: dict) -> tuple[bool, str]:
+    def _cache_status(
+        self, audio_path: Path, metadata_path: Path, expected: dict
+    ) -> tuple[bool, str]:
         if not audio_path.is_file() or audio_path.stat().st_size == 0:
             return False, "audio missing or empty"
         try:
@@ -1213,7 +1586,11 @@ class PiperTTSPlugin(BasePlugin):
             return False, "metadata is not an object"
         if all(actual.get(key) == value for key, value in expected.items()):
             return True, "valid"
-        changed = sorted(key for key in set(actual) | set(expected) if actual.get(key) != expected.get(key))
+        changed = sorted(
+            key
+            for key in set(actual) | set(expected)
+            if actual.get(key) != expected.get(key)
+        )
         return False, f"metadata mismatch ({', '.join(changed)})"
 
     def _remove_stale_audio(self, site_audio_dir: Path) -> None:

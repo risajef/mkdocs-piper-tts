@@ -81,6 +81,101 @@ Both helpers are also available as:
 {{ piper_tts_reading_time(page, "approximate reading time:") }}
 ```
 
+The reading-time label is language-aware by default: it falls back to each
+language's `reading_time_label` (configured alongside `label` in `languages`,
+or the bundled German/English default) when no explicit label argument is
+given, so templates covering multiple languages do not need to pass a label at
+all.
+
+Pages with only a few seconds of audio rarely warrant a reading-time badge.
+Rather than parsing the rendered duration text, set a threshold once in
+`mkdocs.yml`:
+
+```yaml
+plugins:
+  - piper-tts:
+      reading_time_min_seconds: 60
+```
+
+or pass `min_seconds` at the call site to override it per template:
+
+```jinja2
+{{ piper_tts_reading_time(page, min_seconds=60) }}
+{{ piper_tts_controls(page, reading_time_min_seconds=60) }}
+```
+
+`piper_tts_reading_time` returns an empty string whenever the total duration is
+below the effective threshold (the call-site argument if given, otherwise
+`reading_time_min_seconds`, which defaults to `0`, i.e. always shown).
+
+Use the combined helper to render the reading time and the audio player as a
+single block, in the order they should appear, without any client-side DOM
+manipulation:
+
+```jinja2
+{{ piper_tts_controls(page) }}
+```
+
+To place that combined block immediately after a page's first `h1` without any
+template markup or JavaScript repositioning, set:
+
+```yaml
+plugins:
+  - piper-tts:
+      insert_reading_time_after_heading: true
+```
+
+With this enabled, the plugin injects the reading-time markup directly into
+the rendered page HTML during the build; do not also call
+`piper_tts_reading_time(page)` in the template, or it will render twice.
+`piper_tts_button`/`piper_tts_playlist` are unaffected and can still be placed
+anywhere (for example, in a fixed player bar) independently of this setting.
+
+### Compact Player Mode
+
+By default `piper_tts_button`/`piper_tts_playlist` render the browser's native
+`<audio controls>` element plus an ordered list of track buttons (`mode="list"`).
+Pass `mode="compact"` for a title+prev/next+play/pause bar rendered and driven
+entirely by the plugin, so consuming themes do not need to reimplement a
+player against internal markup:
+
+```jinja2
+{{ piper_tts_playlist(page, mode="compact") }}
+{{ piper_tts_controls(page, mode="compact") }}
+```
+
+In compact mode, the native `<audio>` element is rendered without the
+`controls` attribute (so browsers do not show their own UI); the compact bar
+is the only visible control surface and does not require any CSS to hide the
+native player. Sites are still responsible for the bar's visual styling using
+the stable classes below.
+
+Prev/next/play/pause accessibility labels are language-aware: configure
+`prev_label`, `next_label`, `play_label`, and `pause_label` per language in
+`languages` (alongside `label` and `reading_time_label`), the same way the
+bundled German and English defaults do. No labels need to be threaded through
+the consuming theme's own translation dictionary.
+
+### Theming API
+
+The following classes and attributes are a stable, documented contract for
+styling the player; they are safe to target from a theme's CSS and will not
+change without a note in the changelog:
+
+- `.piper-tts-button-wrapper` — outer container for both modes (the base
+  class name follows the configured `button_class`, default `piper-tts-button`).
+- `.piper-tts-mode-compact` — added to the wrapper only in compact mode.
+- `.piper-tts-button-playlist` — the `<ol>` of track buttons (present in both
+  modes); `button[data-track-index]` are its items, and the active item has
+  `aria-current="true"`.
+- `.piper-tts-playlist-expanded` — toggled onto the playlist `<ol>` in compact
+  mode to reveal it as a dropdown; absent/removed means collapsed.
+- `.piper-tts-compact-bar` — the compact mode bar container, with
+  `.piper-tts-prev`, `.piper-tts-play-pause`, `.piper-tts-now-playing`, and
+  `.piper-tts-next` buttons inside it.
+- `.piper-tts-reading-time` — the reading-time `<span>`.
+- `.piper-tts-controls` — the wrapper `<div>` emitted by `piper_tts_controls`.
+
 ## Section And Playlist Rules
 
 Audio is generated per page section and then played as an ordered playlist:
